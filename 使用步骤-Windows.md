@@ -1,6 +1,8 @@
 **电脑不用带在身边，也能正常干活。** 电脑留在家里或公司开着，出门只带手机，就能接着用电脑上的 Cursor
 
-源码：
+源码：https://github.com/1hhjkcnfjg82/cursor-remote-lite
+
+源源代码：https://github.com/Suchenl/cursor-remote-lite.git
 
 目录：`d:\company\phoneCursor\cursor-remote-lite`  
 App：https://1hhjkcnfjg82.github.io/cursor-remote-app/  
