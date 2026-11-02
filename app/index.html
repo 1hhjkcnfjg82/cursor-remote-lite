@@ -376,8 +376,12 @@ async function api(path, opts = {}) {
 const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body || {}) });
 
 // Pairing links look like <app>#pair=<url key>.<one-time code>.
+// Also accept ?pair=, pair=…, or the bare key.code segment (handy when pasting from notes).
 function parsePair(text) {
-  const m = /[#&]pair=([\w-]{43})\.([\w-]{16,})/.exec(text || '');
+  const s = String(text || '').trim();
+  let m = /[#&?]pair=([\w-]{43})\.([\w-]{16,})/.exec(s);
+  if (m) return { key: m[1], code: m[2] };
+  m = /^([\w-]{43})\.([\w-]{16,})$/.exec(s);
   return m ? { key: m[1], code: m[2] } : null;
 }
 let pending = parsePair(location.hash);
@@ -415,11 +419,32 @@ function showUnpaired(msg = '') {
 }
 
 function pastePair(text) {
-  const p = parsePair(text);
-  if (!p) return showUnpaired('这不是配对链接（应包含 #pair=…）');
+  const raw = String(text || '').trim();
+  const p = parsePair(raw);
+  if (!p) {
+    let asUrl;
+    try { asUrl = new URL(raw); } catch {}
+    if (asUrl && /^https?:$/.test(asUrl.protocol)) {
+      // Gateway / LAN address without #pair= — save as App 地址, then ask for the real pairing link.
+      if (inApp && window.CursorRemoteApp?.setUrl) {
+        window.CursorRemoteApp.setUrl(asUrl.href);
+        return;
+      }
+      return showUnpaired('这是访问地址，还不是配对链接。\n请在电脑运行 npm run pair，把带 #pair=… 的整段链接粘贴到这里（也可以只粘贴 #pair= 后面的 key.code）。');
+    }
+    return showUnpaired('这不是配对链接（应包含 #pair=…，或只粘贴 key.code 那一段）');
+  }
   let target;
-  try { target = new URL(text.trim()); } catch {}
+  try { target = new URL(raw); } catch {}
   const here = location.origin + location.pathname;
+  // Already on the relay itself (LAN / 网关反代，url.json 为 self)：留在当前地址配对，
+  // 不要跳到 pair 链接里的局域网 IP（手机开 VPN 时往往打不开）。
+  if (info?.self) {
+    pending = p;
+    store.set('key', p.key);
+    boot();
+    return;
+  }
   // A link for another app address: switch to it (the Android app remembers the new address).
   if (target && /^https?:$/.test(target.protocol) && target.origin + target.pathname !== here) {
     if (inApp) return window.CursorRemoteApp.setUrl(target.href);

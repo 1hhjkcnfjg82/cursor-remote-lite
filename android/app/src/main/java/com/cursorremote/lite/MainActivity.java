@@ -192,7 +192,7 @@ public class MainActivity extends Activity {
         if (u == null || !"cursorremote".equals(u.getScheme())) return false;
         String app = u.getQueryParameter("app");
         String d = u.getQueryParameter("d");
-        if (app == null || d == null || !app.startsWith("https://") || !d.matches("[\\w-]+\\.[\\w-]+")) return false;
+        if (app == null || d == null || !(app.startsWith("https://") || app.startsWith("http://")) || !d.matches("[\\w-]+\\.[\\w-]+")) return false;
         prefs.edit().putString("url", app).apply();
         web.loadUrl(app + "#pair=" + d);
         return true;
@@ -258,7 +258,8 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void setUrl(String url) {
-            if (url == null || !url.startsWith("https://")) return;
+            // LAN relay uses http://IP:port; GitHub Pages / Cloudflare use https://
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
             // A pasted pairing link keeps its #pair fragment for this load, but only the address is remembered.
             prefs.edit().putString("url", url.split("#")[0]).apply();
             runOnUiThread(() -> { web.clearHistory(); web.loadUrl(url); });

@@ -18,6 +18,12 @@ $env:Path = "C:\Program Files\nodejs;" + $env:Path
 
 ## 日常使用
 
+资源管理器里双击项目目录中的 `start-windows.bat` 即可（会重启 Cursor 并开中继；**保持弹出的窗口开着**）。
+
+手机打开 Cursor Remote → 左上角切窗口 → 底部发消息。
+
+若仍想手动分两步：
+
 ```powershell
 cd d:\company\phoneCursor\cursor-remote-lite
 powershell -ExecutionPolicy Bypass -File .\start-cursor.ps1
@@ -30,8 +36,6 @@ cd d:\company\phoneCursor\cursor-remote-lite
 $env:Path = "C:\Program Files\nodejs;" + $env:Path
 npm run public
 ```
-
-手机打开 Cursor Remote → 左上角切窗口 → 底部发消息。
 
 ---
 
@@ -54,5 +58,5 @@ npm run pair
 
 - 多账号：在电脑 Cursor 里切换即可，手机不用换号  
 - `npm run devices` 查看已配对设备  
-- 「未连接到 Cursor」→ 重跑 `start-cursor.ps1`  
-- 「电脑不在线」→ 检查睡眠 / `npm run public` 是否还在跑  
+- 「未连接到 Cursor」→ 再双击 `start-windows.bat`（或单独跑 `start-cursor.ps1`）  
+- 「电脑不在线」→ 检查睡眠 / 中继窗口是否还在跑  

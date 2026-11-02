@@ -166,9 +166,13 @@ export const saveState = state => writeJson('state.json', { ...readJson('state.j
 export const readState = () => readJson('state.json', {});
 export const readConfig = () => readJson('config.json', {});
 
-// Where the phone app lives: the GitHub Pages copy if configured, else the relay itself.
+// Where the phone app lives: optional publicUrl (e.g. KubeSphere gateway), else GitHub Pages, else the relay itself.
 export function appBase() {
-  const repo = readConfig().publishRepo;
+  const cfg = readConfig();
+  if (cfg.publicUrl) return String(cfg.publicUrl).replace(/\/?$/, '/');
+  const envUrl = process.env.CR_PUBLIC_URL;
+  if (envUrl) return String(envUrl).replace(/\/?$/, '/');
+  const repo = cfg.publishRepo;
   if (repo) {
     const [owner, name] = repo.split('/');
     return `https://${owner.toLowerCase()}.github.io/${name}/`;

@@ -222,10 +222,10 @@ powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
 powercfg /setactive SCHEME_CURRENT
 ```
 
-Windows 上的启动方式（都在 PowerShell 里运行，不要用 Cursor 自带的终端，Cursor 重启时它会被一起关掉）：
+Windows 上的启动方式：
 
-1. 在项目目录运行 `powershell -ExecutionPolicy Bypass -File .\start-cursor.ps1`，Cursor 会退出并带调试端口重新打开（等同于 Mac 上的 `./start-cursor.sh`）。
-2. 再运行 `npm run public`，这个窗口一直开着别关。`npm run pair` 照常使用。
+- **一键**：资源管理器双击 `start-windows.bat`（会重启 Cursor 并启动隧道中继；保持弹出窗口开着）。不要从 Cursor 自带终端里跑，Cursor 重启时那个终端会被关掉。
+- **分步**（系统 PowerShell）：先 `powershell -ExecutionPolicy Bypass -File .\start-cursor.ps1`，再 `npm run public`。`npm run pair` 照常另开窗口使用。
 
 ### 代价
 

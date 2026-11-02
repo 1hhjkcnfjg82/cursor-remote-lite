@@ -79,11 +79,19 @@ function readBody(req, limit = 4096) {
 }
 
 // Same-origin (app served by this relay) or the user's own GitHub Pages app.
+// Behind a reverse proxy/gateway, Host may be the backend while Origin is the public host — honor X-Forwarded-Host.
 function originAllowed(req) {
   const origin = req.headers.origin;
   if (!origin) return true;
   if (ALLOWED_ORIGINS.has(origin)) return true;
-  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+  try {
+    const oh = new URL(origin).host;
+    if (oh === req.headers.host) return true;
+    const xf = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+    return Boolean(xf && oh === xf);
+  } catch {
+    return false;
+  }
 }
 
 async function listWindows() {
