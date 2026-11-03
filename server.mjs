@@ -1456,66 +1456,102 @@ function startTunnel() {
   process.on('SIGTERM', stop);
 }
 
-function pickRegisterIp(prefer) {
-  if (prefer && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(prefer)) return prefer;
-  const ips = Object.values(os.networkInterfaces()).flat()
-    .filter(i => i && (i.family === 'IPv4' || i.family === 4) && !i.internal)
-    .map(i => i.address)
-    .filter(ip => !ip.startsWith('169.254.') && !ip.startsWith('198.18.'));
-  const score = ip => {
-    if (ip.startsWith('10.')) return 3;
-    if (ip.startsWith('172.')) {
-      const b = Number(ip.split('.')[1]);
-      if (b >= 16 && b <= 31) return 2;
+function listRegisterIps(prefer) {
+  if (prefer && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(prefer)) return [prefer];
+  const ifaces = Object.entries(os.networkInterfaces());
+  const scored = [];
+  for (const [name, addrs] of ifaces) {
+    for (const i of addrs || []) {
+      if (!i || (i.family !== 'IPv4' && i.family !== 4) || i.internal) continue;
+      const ip = i.address;
+      if (ip.startsWith('169.254.') || ip.startsWith('198.18.') || ip.startsWith('172.2')) continue;
+      let score = 0;
+      if (ip.startsWith('10.')) score = 3;
+      else if (ip.startsWith('172.')) {
+        const b = Number(ip.split('.')[1]);
+        if (b >= 16 && b <= 31) score = 2;
+      } else if (ip.startsWith('192.168.')) score = 1;
+      if (!score) continue;
+      // Prefer Wi-Fi / WLAN over wired when scores tie — company gateway often
+      // reaches the Wi-Fi/VPN address but not a second NIC on another 10.x segment.
+      if (/wlan|wi-?fi|wireless|vpn|tap|tun/i.test(name)) score += 0.5;
+      scored.push({ ip, score, name });
     }
-    if (ip.startsWith('192.168.')) return 1;
-    return 0;
-  };
-  return ips.filter(ip => score(ip) > 0).sort((a, b) => score(b) - score(a))[0] || null;
+  }
+  return scored.sort((a, b) => b.score - a.score).map(x => x.ip);
+}
+
+function gwOrigin() {
+  if (CONFIG.gwRegisterUrl) {
+    try { return new URL(CONFIG.gwRegisterUrl).origin; } catch { return null; }
+  }
+  const pub = CONFIG.publicUrl || process.env.CR_PUBLIC_URL;
+  if (!pub) return null;
+  try { return new URL(pub).origin; } catch { return null; }
 }
 
 function gwRegisterEndpoint() {
   if (CONFIG.gwRegisterUrl) return String(CONFIG.gwRegisterUrl).replace(/\/?$/, '');
-  const pub = CONFIG.publicUrl || process.env.CR_PUBLIC_URL;
-  if (!pub) return null;
+  const origin = gwOrigin();
+  return origin ? `${origin}/_register` : null;
+}
+
+async function postRegister(endpoint, token, user, host) {
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ u: user, host }),
+    signal: AbortSignal.timeout(8000),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 200)}`);
+}
+
+async function gatewayCanReach(origin, user) {
   try {
-    const u = new URL(pub);
-    return `${u.origin}/_register`;
+    const r = await fetch(`${origin}/`, {
+      headers: { cookie: `cr_u=${encodeURIComponent(user)}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    return r.ok;
   } catch {
-    return null;
+    return false;
   }
 }
 
 async function registerWithGateway() {
   const endpoint = gwRegisterEndpoint();
+  const origin = gwOrigin();
   let user = CONFIG.gwUser;
   if (!user && CONFIG.publicUrl) {
     try { user = new URL(CONFIG.publicUrl).searchParams.get('u'); } catch {}
   }
   const token = CONFIG.gwRegisterToken || process.env.CR_GW_REGISTER_TOKEN;
   if (!endpoint || !user || !token) return;
-  const ip = pickRegisterIp(CONFIG.gwRegisterIp);
-  if (!ip) {
+  const ips = listRegisterIps(CONFIG.gwRegisterIp);
+  if (!ips.length) {
     console.log('!! 网关登记跳过：没有可用的内网/VPN IP');
     return;
   }
-  const host = `${ip}:${PORT}`;
-  try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ u: user, host }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 200)}`);
-    console.log(`已向网关登记 ${user} → ${host}`);
-  } catch (e) {
-    console.log(`!! 网关登记失败：${e.message}`);
+  const tried = [];
+  for (const ip of ips) {
+    const host = `${ip}:${PORT}`;
+    tried.push(host);
+    try {
+      await postRegister(endpoint, token, user, host);
+      if (!origin || await gatewayCanReach(origin, user)) {
+        console.log(`已向网关登记 ${user} → ${host}`);
+        return;
+      }
+      console.log(`!! 网关登记了 ${host}，但网关连不上本机，试下一个 IP…`);
+    } catch (e) {
+      console.log(`!! 网关登记 ${host} 失败：${e.message}`);
+    }
   }
+  console.log(`!! 网关登记失败：试过 ${tried.join(', ')}，集群都连不上。可在 config.json 设 gwRegisterIp，或检查防火墙是否放行 ${PORT}`);
 }
 
 function startGatewayRegistration() {
