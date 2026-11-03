@@ -1,67 +1,70 @@
-# 一、手机安装vpn
+# 快速上手（Windows · 公司内网）
 
-![31531a9650d06288a3ef15e172d8daeb](E:\app\apphome\xwechat_files\wxid_369po9kbs1nv22_33f9\temp\RWTemp\2026-11\31531a9650d06288a3ef15e172d8daeb.jpg)
+用手机 remotely 操作电脑上的 Cursor。手机和电脑都要连**公司 VPN**，走统一网关（不能直连电脑）。
 
-名字：常州
+准备：电脑已装 [Node.js 22+](https://nodejs.org/)，手机能装公司 VPN。
 
-下面填 153.101.29.18:12443
+---
 
-# 二、电脑端（按顺序）
+## 1. 手机连 VPN
 
-命令一律用**系统 PowerShell**（不要用 Cursor 终端）。若 `node` 不对，先执行：
+- 名字：常州  
+- 地址：`153.101.29.18:12443`  
+
+之后用手机打开 Remote 时，保持 VPN 开着。
+
+---
+
+## 2. 电脑：装好项目（只需一次）
+
+打开**系统 PowerShell**（不要用 Cursor 里的终端）：
 
 ```powershell
 $env:Path = "C:\Program Files\nodejs;" + $env:Path
-```
-
-电源：接通电源后睡眠选 **从不**（电脑睡了手机就连不上）。
-
-电脑和手机都要连公司 VPN（在家也一样）。手机不能直连电脑，必须走网关。
-
-## 1. 拉源码 & 安装依赖（每台电脑一次）
-
-```powershell
 cd d:\company\phoneCursor
 git clone https://github.com/1hhjkcnfjg82/cursor-remote-lite.git
 cd cursor-remote-lite
 npm install
 ```
 
-以后日常进入目录：
+目录可以自己换，后面命令里的路径跟着改即可。
 
-```powershell
-cd d:\company\phoneCursor\cursor-remote-lite
+---
+
+## 3. 电脑：写自己的配置（只需一次）
+
+新建文件：`%USERPROFILE%\.cursor-remote-lite\config.json`
+
+（资源管理器地址栏粘贴 `%USERPROFILE%\.cursor-remote-lite`，没有这个文件夹就新建一个。）
+
+内容如下，**把两处「小明」换成你自己的代号**（拼音/工号均可，和别人不要重复）：
+
+```json
+{
+  "publicUrl": "http://192.168.120.110:30939/?u=小明",
+  "gwUser": "小明",
+  "gwRegisterToken": "向管理员要"
+}
 ```
 
-## 2. 写本机入口（每台电脑一次，建议在配对前完成）
+`gwRegisterToken` 问管理员要一串令牌，粘贴替换 `"向管理员要"`。
 
-在 `%USERPROFILE%\.cursor-remote-lite\config.json` 写上（没有该文件就新建）：
+电脑电源建议：接通电源后，睡眠选 **从不**。
 
-~~~~~~
-{
-  "publicUrl": "http://192.168.120.110:30939/?u=lujichuan",
-  "gwUser": "lujichuan",
-  "gwRegisterToken": "向管理员要登记令牌"
-}
-~~~~~~
+---
 
-把 `lujichuan` 换成你自己的用户名（手机入口 `?u=` 必须相同）。  
-`gwRegisterToken` 向管理员要（全员共用一个）。  
+## 4. 每次要用时：电脑开两步
 
-**不用再手改网关字典 IP。** `npm start` 会自动把当前 VPN/内网 IP 登记到网关；IP 变了重新 `npm start`（或等约 2 分钟心跳）即可。
+系统 PowerShell，进入项目目录后：
 
-`npm run pair` 会用 `publicUrl` 生成配对链接；不配的话配对链接会变成电脑局域网地址，手机走网关会对不上。
-
-## 3. 启动 Cursor（带调试端口）
+**① 让 Cursor 带调试端口（会重启 Cursor）**
 
 ```powershell
 cd d:\company\phoneCursor\cursor-remote-lite
 powershell -ExecutionPolicy Bypass -File .\start-cursor.ps1
 ```
 
-## 4. 开中继（常驻，别关）
-
-另开一个系统 PowerShell 窗口：
+**② 再开一个窗口，启动中继（这个窗口一直留着，别关）**
 
 ```powershell
 cd d:\company\phoneCursor\cursor-remote-lite
@@ -69,11 +72,17 @@ $env:Path = "C:\Program Files\nodejs;" + $env:Path
 npm start
 ```
 
-终端出现 `已向网关登记 lujichuan → 10.x.x.x:3939` 即登记成功。
+看到类似这行就对了：
 
-## 5. 配对（每台手机一次）
+```text
+已向网关登记 小明 → 10.x.x.x:3939
+```
 
-再开一个窗口跑一次即可（不是常驻）：
+---
+
+## 5. 手机配对（每台手机只需一次）
+
+电脑中继保持开着，再开一个 PowerShell：
 
 ```powershell
 cd d:\company\phoneCursor\cursor-remote-lite
@@ -81,17 +90,26 @@ $env:Path = "C:\Program Files\nodejs;" + $env:Path
 npm run pair
 ```
 
-把终端里打印的**整段链接**（带 `#pair=…`）用手机打开；约 10 分钟有效、只能用一次。过期再跑一次 `npm run pair` 换新链接。
+把终端里打印的**整段链接**（带 `#pair=…`）发到手机，用浏览器或 Cursor Remote App 打开。约 10 分钟有效，过期再执行一次 `npm run pair`。
 
-# 三、手机端
+---
 
-下面把 `lujichuan` 换成你自己的用户名。
+## 6. 以后日常怎么用
 
-1. 日常使用  
-   `http://192.168.120.110:30939/?u=lujichuan`  
-   → 转到你电脑上的中继（电脑要已开 `npm start`，且未睡眠）
+1. 电脑连 VPN → 跑第 4 步的 ①②（`npm start` 窗口别关）  
+2. 手机连 VPN → 打开：
 
-2. 配对（每台手机一次）  
-   `http://192.168.120.110:30939/?u=lujichuan#pair=……`  
-   → 在 1 的基础上带上电脑 `npm run pair` 生成的 `#pair=…`  
-   （约 10 分钟有效、只能用一次；过期再跑一次 `npm run pair` 换新链接）
+```text
+http://192.168.120.110:30939/?u=小明
+```
+
+（`小明` 换成你的代号。）
+
+---
+
+## 常见问题
+
+- **代号无效 / 连不上**：先看电脑 `npm start` 有没有「已向网关登记」；手机 VPN 是否已连。  
+- **未连接到 Cursor**：再跑一次 `start-cursor.ps1`。  
+- **换网络 / 重拨 VPN 后连不上**：重新执行一次 `npm start` 即可，不用改配置。  
+- **一直登记失败**：把报错发给管理员；可能需要在配置里加 `"gwRegisterIp": "你的10.x地址"`。
