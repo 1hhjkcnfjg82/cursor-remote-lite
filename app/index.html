@@ -300,6 +300,9 @@ const onGitHubPages = /\.github\.io$/i.test(location.hostname);
 // Only used to cancel in-flight reconnect sleeps when leaving/returning to the app.
 let reconnectEpoch = 0;
 let resumeTimer = null;
+// Ignore visibility/resume until the first boot() has started a connection (Android fires
+// spurious visible/hidden during WebView load, which used to kill the fresh socket).
+let appReady = false;
 
 // Keep the layout above the on-screen keyboard.
 function fitViewport() {
@@ -577,6 +580,7 @@ function reconnectDelay() {
 
 /** Back to foreground: reconnect immediately if the socket died while backgrounded. */
 function resumeConnection() {
+  if (!appReady) return;
   failures = 0;
   clearTimeout(retryTimer);
   clearTimeout(resumeTimer);
@@ -587,13 +591,18 @@ function resumeConnection() {
       status('已连接');
       return;
     }
+    // CONNECTING or OPEN-but-authing: leave it alone (double connect was causing [+]/[-] flaps).
+    if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
     connect();
   }, 50);
 }
 
 function connect() {
   clearTimeout(retryTimer);
-  // Never refuse to connect because of a sticky "hidden" flag — that broke first connect on Android WebView.
+  appReady = true;
+  // Already handshaking / connected — do not tear down (boot + resume used to race and kill the live socket).
+  if (ws && (ws.readyState === 0 || (ws.readyState === 1 && authed))) return;
+  if (ws && ws.readyState === 1 && !authed) return;
   const prev = ws;
   ws = null;
   if (prev) {
@@ -939,6 +948,7 @@ function openWin(id) {
 window.openWin = openWin;
 navigator.serviceWorker?.addEventListener('message', e => openWin(e.data?.openWin));
 document.addEventListener('visibilitychange', () => {
+  if (!appReady) return;
   if (document.visibilityState === 'hidden') {
     reconnectEpoch++; // cancel pending reconnect sleeps only
     if (authed) send({ t: 'visible', v: false });
@@ -946,8 +956,9 @@ document.addEventListener('visibilitychange', () => {
     resumeConnection();
   }
 });
-// Android App onResume/onPause（需新 APK；不要在 pause 里阻止 connect）
+// Android App onResume/onPause（需新 APK）
 window.cursorRemotePause = () => {
+  if (!appReady) return;
   reconnectEpoch++;
   if (authed) send({ t: 'visible', v: false });
 };
