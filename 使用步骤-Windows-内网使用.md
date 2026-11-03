@@ -16,6 +16,8 @@ $env:Path = "C:\Program Files\nodejs;" + $env:Path
 
 电源：接通电源后睡眠选 **从不**（电脑睡了手机就连不上）。
 
+电脑和手机都要连公司 VPN（在家也一样）。手机不能直连电脑，必须走网关。
+
 ## 1. 拉源码 & 安装依赖（每台电脑一次）
 
 ```powershell
@@ -31,41 +33,33 @@ npm install
 cd d:\company\phoneCursor\cursor-remote-lite
 ```
 
-## 2. 登记网关字典（每台电脑一次）
+## 2. 写本机入口（每台电脑一次，建议在配对前完成）
 
-项目 haosmart-btp-dev → 配置字典 → `cursor-remote-gw`  
-把**你的用户名**指到本机局域网 IP + 中继端口 `3939`（多人共用同一份字典，各自加一行）：
-
-~~~~~~
-{
-  "lujichuan": "10.9.16.54:3939",
-  "xxxxxx": "ip:3939"
-}
-~~~~~~
-
-`xxxxxx` / `ip` 换成同事自己的用户名和电脑 IP。手机入口里的 `?u=` 必须和这里的 key 一致。
-
-## 3. 写本机入口（每台电脑一次，建议在配对前完成）
-
-在 `%USERPROFILE%\.cursor-remote-lite\config.json` 写上自己的网关入口（没有该文件就新建）：
+在 `%USERPROFILE%\.cursor-remote-lite\config.json` 写上（没有该文件就新建）：
 
 ~~~~~~
 {
-  "publicUrl": "http://192.168.120.110:30939/?u=lujichuan"
+  "publicUrl": "http://192.168.120.110:30939/?u=lujichuan",
+  "gwUser": "lujichuan",
+  "gwRegisterToken": "向管理员要登记令牌"
 }
 ~~~~~~
 
-把 `lujichuan` 换成你自己的用户名（与上一步字典 key 相同）。  
-`npm run pair` 会用这里的地址生成配对链接；不配的话配对链接会变成电脑局域网地址，手机走网关会对不上。
+把 `lujichuan` 换成你自己的用户名（手机入口 `?u=` 必须相同）。  
+`gwRegisterToken` 向管理员要（全员共用一个）。  
 
-## 4. 启动 Cursor（带调试端口）
+**不用再手改网关字典 IP。** `npm start` 会自动把当前 VPN/内网 IP 登记到网关；IP 变了重新 `npm start`（或等约 2 分钟心跳）即可。
+
+`npm run pair` 会用 `publicUrl` 生成配对链接；不配的话配对链接会变成电脑局域网地址，手机走网关会对不上。
+
+## 3. 启动 Cursor（带调试端口）
 
 ```powershell
 cd d:\company\phoneCursor\cursor-remote-lite
 powershell -ExecutionPolicy Bypass -File .\start-cursor.ps1
 ```
 
-## 5. 开中继（常驻，别关）
+## 4. 开中继（常驻，别关）
 
 另开一个系统 PowerShell 窗口：
 
@@ -75,7 +69,9 @@ $env:Path = "C:\Program Files\nodejs;" + $env:Path
 npm start
 ```
 
-## 6. 配对（每台手机一次）
+终端出现 `已向网关登记 lujichuan → 10.x.x.x:3939` 即登记成功。
+
+## 5. 配对（每台手机一次）
 
 再开一个窗口跑一次即可（不是常驻）：
 

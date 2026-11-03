@@ -1456,6 +1456,75 @@ function startTunnel() {
   process.on('SIGTERM', stop);
 }
 
+function pickRegisterIp(prefer) {
+  if (prefer && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(prefer)) return prefer;
+  const ips = Object.values(os.networkInterfaces()).flat()
+    .filter(i => i && (i.family === 'IPv4' || i.family === 4) && !i.internal)
+    .map(i => i.address)
+    .filter(ip => !ip.startsWith('169.254.') && !ip.startsWith('198.18.'));
+  const score = ip => {
+    if (ip.startsWith('10.')) return 3;
+    if (ip.startsWith('172.')) {
+      const b = Number(ip.split('.')[1]);
+      if (b >= 16 && b <= 31) return 2;
+    }
+    if (ip.startsWith('192.168.')) return 1;
+    return 0;
+  };
+  return ips.filter(ip => score(ip) > 0).sort((a, b) => score(b) - score(a))[0] || null;
+}
+
+function gwRegisterEndpoint() {
+  if (CONFIG.gwRegisterUrl) return String(CONFIG.gwRegisterUrl).replace(/\/?$/, '');
+  const pub = CONFIG.publicUrl || process.env.CR_PUBLIC_URL;
+  if (!pub) return null;
+  try {
+    const u = new URL(pub);
+    return `${u.origin}/_register`;
+  } catch {
+    return null;
+  }
+}
+
+async function registerWithGateway() {
+  const endpoint = gwRegisterEndpoint();
+  let user = CONFIG.gwUser;
+  if (!user && CONFIG.publicUrl) {
+    try { user = new URL(CONFIG.publicUrl).searchParams.get('u'); } catch {}
+  }
+  const token = CONFIG.gwRegisterToken || process.env.CR_GW_REGISTER_TOKEN;
+  if (!endpoint || !user || !token) return;
+  const ip = pickRegisterIp(CONFIG.gwRegisterIp);
+  if (!ip) {
+    console.log('!! 网关登记跳过：没有可用的内网/VPN IP');
+    return;
+  }
+  const host = `${ip}:${PORT}`;
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ u: user, host }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 200)}`);
+    console.log(`已向网关登记 ${user} → ${host}`);
+  } catch (e) {
+    console.log(`!! 网关登记失败：${e.message}`);
+  }
+}
+
+function startGatewayRegistration() {
+  if (TUNNEL) return;
+  const run = () => { registerWithGateway().catch(() => {}); };
+  run();
+  setInterval(run, 2 * 60 * 1000).unref?.();
+}
+
 server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
   console.log(`Cursor Remote Lite 已启动，端口 ${PORT}`);
   console.log(`已配对 ${listDevices().length} 台设备。添加新设备：npm run pair`);
@@ -1481,5 +1550,6 @@ server.listen(PORT, TUNNEL ? '127.0.0.1' : HOST, async () => {
       saveState({ relayUrl: `http://${ips[0]}:${PORT}/` });
       offerFirstPairing();
     }
+    startGatewayRegistration();
   }
 });
