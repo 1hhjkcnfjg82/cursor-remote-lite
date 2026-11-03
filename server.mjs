@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
 import { workspaces, workspaceForTitle, fileSize, readFile, parseRef } from './files.mjs';
@@ -13,6 +14,7 @@ import {
   removeDevice, totpConfig, verifyTotp, needsTotp, saveState, appBase,
 } from './auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, addViewer, removeViewer, deliver, startWatcher } from './notify.mjs';
+import { createFrpcOwner } from './bridge/frpc-owner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3939);
@@ -1326,6 +1328,8 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 // The token arrives as the first message rather than in the URL, so it never shows up in proxy logs.
+// Protocol ping + app-level {t:'ping'} keep half-open VPN/frp sockets from looking "connected".
+const WS_PING_MS = 20000;
 wss.on('connection', (ws, req) => {
   let session = null;
   const ip = clientIp(req);
@@ -1334,8 +1338,31 @@ wss.on('connection', (ws, req) => {
     console.log(`[!] ws ${ip} 认证超时`);
     ws.close(4001, 'auth timeout');
   }, 5000);
+
+  // VPN/frp blips can drop one ping; require 2 consecutive misses (~40s) before kill.
+  let missedPongs = 0;
+  let pingTimer = null;
+  const stopPing = () => {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+  };
+  const startPing = () => {
+    stopPing();
+    missedPongs = 0;
+    pingTimer = setInterval(() => {
+      if (missedPongs >= 2) {
+        console.log(`[!] ws ${ip} 心跳连续超时，断开`);
+        try { ws.terminate(); } catch {}
+        return;
+      }
+      missedPongs += 1;
+      try { ws.ping(); } catch { try { ws.terminate(); } catch {} }
+    }, WS_PING_MS);
+  };
+  ws.on('pong', () => { missedPongs = 0; });
+
   let queue = Promise.resolve();
   ws.on('message', raw => {
+    missedPongs = 0;
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     if (!session) {
@@ -1351,6 +1378,12 @@ wss.on('connection', (ws, req) => {
       addViewer(session);
       ws.send(JSON.stringify({ t: 'auth', ok: true }));
       console.log(`[+] client ${ip}「${device.name}」`);
+      startPing();
+      return;
+    }
+    // App-level ping from phone (detects dead path when protocol ping is buffered by proxies).
+    if (msg.t === 'ping') {
+      try { ws.send(JSON.stringify({ t: 'pong' })); } catch {}
       return;
     }
     // Frame acks bypass the queue so a slow command never stalls the stream.
@@ -1366,12 +1399,17 @@ wss.on('connection', (ws, req) => {
       }
     });
   });
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     clearTimeout(authTimer);
-    if (!session) return;
+    stopPing();
+    const why = reason?.toString?.() || '';
+    if (!session) {
+      console.log(`[-] ws ${ip} 未认证关闭 code=${code}${why ? ` ${why}` : ''}`);
+      return;
+    }
     removeViewer(session);
     session.dispose();
-    console.log(`[-] client ${clientIp(req)}`);
+    console.log(`[-] client ${ip} code=${code}${why ? ` ${why}` : ''}`);
   });
 });
 
@@ -1558,7 +1596,13 @@ async function gatewayCanReach(origin, user) {
   }
 }
 
-let frpcChild = null;
+let registerSoon = null;
+const frpcOwner = createFrpcOwner({
+  bridgeDir: path.join(__dirname, 'bridge'),
+  log: (...args) => console.log(...args),
+  // frpc 刚恢复时立刻重登记，不要干等到 2 分钟周期（网关 Pod 重启后尤其重要）。
+  onProxyReady: () => { try { registerSoon?.(); } catch {} },
+});
 
 function frpRegisterHost() {
   if (CONFIG.gwFrpHost) return String(CONFIG.gwFrpHost).trim();
@@ -1570,29 +1614,7 @@ function frpRegisterHost() {
 function ensureFrpc() {
   const remotePort = Number(CONFIG.gwFrpRemotePort || 0);
   if (!remotePort) return false;
-  if (frpcChild && !frpcChild.killed) return true;
-  const dir = path.join(__dirname, 'bridge');
-  const exe = path.join(dir, process.platform === 'win32' ? 'frpc.exe' : 'frpc');
-  const conf = path.join(dir, 'frpc.toml');
-  if (!fs.existsSync(exe) || !fs.existsSync(conf)) {
-    console.log('!! 本机直连失败，需要 frp 回连：缺少 bridge/frpc 或 frpc.toml');
-    return false;
-  }
-  frpcChild = spawn(exe, ['-c', conf], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-  frpcChild.stdout.on('data', (b) => {
-    const s = String(b);
-    if (/start proxy success|login to server success/i.test(s)) console.log('[frpc]', s.trim());
-  });
-  frpcChild.stderr.on('data', (b) => {
-    const s = String(b).trim();
-    if (s) console.log('[frpc]', s);
-  });
-  frpcChild.on('exit', (code) => {
-    console.log(`!! frpc 已退出 (code ${code})`);
-    frpcChild = null;
-  });
-  console.log(`已启动 frpc 回连（remotePort=${remotePort}），在家也可走网关`);
-  return true;
+  return frpcOwner.start();
 }
 
 async function tryRegisterLan(endpoint, origin, token, user, tried) {
@@ -1618,22 +1640,21 @@ async function tryRegisterFrp(endpoint, origin, token, user, tried) {
   // Home / VPN-client isolation: PC dials out via frpc; gateway talks to in-cluster frps.
   // No gatewayCanReach here: home PC→gateway→frp→itself hairpins and often times out;
   // phone traffic is a different path. lan/auto still probe LAN candidates.
+  // frpc lifetime is independent of register HTTP: a hairpin timeout must NOT kill the tunnel.
   const frpHost = frpRegisterHost();
   if (!frpHost) {
     console.log('!! gwMode=frp 但未配置 gwFrpRemotePort / gwFrpHost');
     return false;
   }
-  const already = frpcChild && !frpcChild.killed;
   if (!ensureFrpc()) return false;
-  // Only wait for first frpc startup; re-register cycles should not stall 2.5s each time.
-  if (!already) await new Promise((r) => setTimeout(r, 2500));
+  if (!frpcOwner.ready) await frpcOwner.waitReady(5000);
   tried.push(frpHost);
   try {
     await postRegister(endpoint, token, user, frpHost);
     console.log(`已向网关登记 ${user} → ${frpHost}（frp 回连，跳过本机回环探测）`);
     return true;
   } catch (e) {
-    console.log(`!! frp 登记失败：${e.message}`);
+    console.log(`!! frp 登记失败：${e.message}（frpc 继续保持，不影响已建立的隧道）`);
   }
   return false;
 }
@@ -1668,17 +1689,61 @@ async function registerWithGateway() {
 
 function startGatewayRegistration() {
   if (TUNNEL) return;
-  const stopFrpc = () => {
-    if (frpcChild && !frpcChild.killed) {
-      try { frpcChild.kill(); } catch {}
-      frpcChild = null;
-    }
+  let shuttingDown = false;
+  const shutdown = (why) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`正在停止（${why}）…`);
+    try { frpcOwner.stop(); } catch {}
+    // exit after a tick so frpc taskkill can finish
+    setTimeout(() => process.exit(0), 200).unref?.();
   };
-  process.on('exit', stopFrpc);
-  process.on('SIGINT', stopFrpc);
-  process.on('SIGTERM', stopFrpc);
+  process.on('exit', () => { try { frpcOwner.stop(); } catch {} });
+  process.on('SIGINT', () => shutdown('Ctrl+C'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // Windows: npm often swallows SIGINT; when node owns the console, readline still sees Ctrl+C.
+  if (process.platform === 'win32' && process.stdin.isTTY) {
+    try {
+      createInterface({ input: process.stdin, output: process.stdout })
+        .on('SIGINT', () => process.emit('SIGINT'));
+    } catch {}
+    process.on('SIGBREAK', () => shutdown('Ctrl+Break'));
+  }
+  // Boot: clear zombies from a previous force-killed node before first register.
+  try { frpcOwner.reap(); } catch {}
   console.log(`网关登记模式 gwMode=${GW_MODE}（可用 --gw=frp|lan|auto 或 config.gwMode）`);
-  const run = () => { registerWithGateway().catch(() => {}); };
+  console.log('停止：本窗口 Ctrl+C，或另开终端执行 npm run stop');
+  if (process.platform === 'win32' && (GW_MODE === 'frp' || GW_MODE === 'auto')) {
+    try {
+      const raw = execFileSync(
+        'powershell.exe',
+        ['-NoProfile', '-Command',
+          "Get-NetIPInterface -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -match '以太网|AnyConnect|Cisco' } | ForEach-Object { $_.InterfaceAlias + '=' + $_.NlMtu }",
+        ],
+        { encoding: 'utf8', windowsHide: true, timeout: 8000 },
+      );
+      for (const line of raw.split(/\r?\n/)) {
+        const m = /^(.+)=(\d+)\s*$/.exec(line.trim());
+        if (!m) continue;
+        const mtu = Number(m[2]);
+        if (mtu > 1200) {
+          console.log(`!! VPN 网卡「${m[1]}」MTU=${mtu}，大于 1200 时 frp 大包易丢（页面/连接会假死）。建议：netsh interface ipv4 set subinterface "${m[1]}" mtu=1200 store=persistent`);
+        }
+      }
+    } catch {}
+  }
+  let registerBusy = false;
+  const run = () => {
+    if (registerBusy) return;
+    registerBusy = true;
+    registerWithGateway()
+      .catch(() => {})
+      .finally(() => { registerBusy = false; });
+  };
+  registerSoon = () => {
+    console.log('frpc 代理就绪，立即向网关登记…');
+    run();
+  };
   run();
   setInterval(run, 2 * 60 * 1000).unref?.();
 }

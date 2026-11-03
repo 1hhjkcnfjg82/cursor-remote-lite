@@ -7,6 +7,7 @@
   "scripts": {
     "setup": "node setup.mjs",
     "start": "node server.mjs",
+    "stop": "node stop.mjs",
     "public": "node server.mjs --tunnel",
     "pair": "node devices.mjs pair",
     "devices": "node devices.mjs",

@@ -97,6 +97,17 @@ const getCm = await api(token, 'GET', `/api/v1/namespaces/${ns}/configmaps/${nam
 if (!getCm.ok) throw new Error('configmap missing — run initial deploy first');
 const cm = getCm.data;
 cm.data['gateway.mjs'] = gwJs;
+// Preserve routes.json (boot-time ROUTES_JSON). Never wipe to {}.
+// Optional: FORCE_ROUTE_USER + FORCE_ROUTE_HOST rewrite one entry (home frp).
+if (process.env.FORCE_ROUTE_USER && process.env.FORCE_ROUTE_HOST) {
+  let routes = {};
+  try { routes = JSON.parse(cm.data['routes.json'] || '{}'); } catch { routes = {}; }
+  routes[process.env.FORCE_ROUTE_USER] = process.env.FORCE_ROUTE_HOST;
+  cm.data['routes.json'] = JSON.stringify(routes, null, 2) + '\n';
+  console.log('routes.json forced', process.env.FORCE_ROUTE_USER, '->', process.env.FORCE_ROUTE_HOST);
+} else if (!cm.data['routes.json'] || !String(cm.data['routes.json']).trim() || String(cm.data['routes.json']).trim() === '{}') {
+  console.log('!! routes.json empty — set FORCE_ROUTE_USER/HOST or register from PC after READY');
+}
 const putCm = await api(token, 'PUT', `/api/v1/namespaces/${ns}/configmaps/${name}`, cm);
 console.log('configmap', putCm.status, putCm.ok ? 'ok' : JSON.stringify(putCm.data).slice(0, 300));
 if (!putCm.ok) process.exit(1);

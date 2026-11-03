@@ -10,3 +10,11 @@ android/local.properties
 bridge/frpc.exe
 bridge/frpc.toml
 dist/
+
+# local frpc runtime
+bridge/frpc.pid
+bridge/frpc-run.out
+bridge/frpc-run.err
+bridge/start-out.log
+bridge/start-err.log
+

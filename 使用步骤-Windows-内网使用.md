@@ -84,6 +84,18 @@ npm start -- --gw=lan   # 公司：只登记本机 IP，不启 frpc
 npm start -- --gw=auto  # 默认自动回退
 ```
 
+**停止（重要）**：Windows 上 `npm start` 再 Ctrl+C，有时杀不掉子进程 `frpc`，下次启动会双开抢端口、网关 502。请用下面任一方式：
+
+```powershell
+# 方式 A：另开一个终端
+npm run stop
+
+# 方式 B：直接跑 node（Ctrl+C 更干净）
+node server.mjs --gw=frp
+# 停：本窗口 Ctrl+C，看到「正在停止」后再关
+```
+
+
 也可写进 `config.json`：`"gwMode": "frp"`（命令行优先）。
 
 看到下面任一类似输出就对了：
@@ -143,3 +155,4 @@ http://192.168.120.110:30939/?u=小明
   （把 `以太网 5` 换成上面列表里 Cisco AnyConnect 那一块的名字。）改完后重连 VPN，再 `npm start -- --gw=frp`。手机侧 VPN 若也有 MTU 设置，同样可降到 1200。  
 - **断开后要等一会儿才能再连上**：多半是旧 WebSocket/frp 半开连接还没清掉。确认 `bridge/frpc.toml` 里有 `transport.heartbeatInterval = 10`，然后重启 `npm start -- --gw=frp`；手机强制刷新入口页。仍慢的话把手机 VPN 的 MTU 也降到 1200。  
 - **端口冲突 / frpc 报错**：`remotePort` 是否和别人重复，问管理员换一个（18001–18030）。
+- **整站 502 /「连不上电脑」且本机刚 Ctrl+C 过**：多半是旧 `frpc` 没退干净。执行 `npm run stop` 再 `npm start -- --gw=frp`；平时停服务优先用 `npm run stop`，不要只关黑窗口。

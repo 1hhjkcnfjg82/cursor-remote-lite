@@ -280,6 +280,7 @@
 </div>
 
 <script src="i18n.js"></script>
+<script src="conn.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const PRIMARY = /^(run|allow|accept|approve|keep|continue|build|yes|运行|允许|接受|继续)/i;
@@ -290,19 +291,58 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-let base = null, info = null, ws = null, authed = false, failures = 0, wsGen = 0;
+let base = null, info = null;
 let mode = store.get('mode') || 'chat';
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1, tapMode = 'tap', rightNext = false;
 let windows = [], currentWindow = null;
 // Gateway / LAN serve the app from the relay itself; only GitHub Pages needs url.json discovery.
 const onGitHubPages = /\.github\.io$/i.test(location.hostname);
-// Only used to cancel in-flight reconnect sleeps when leaving/returning to the app.
-let reconnectEpoch = 0;
+let sentWidth = 0;
 let resumeTimer = null;
-// Ignore visibility/resume until the first boot() has started a connection (Android fires
-// spurious visible/hidden during WebView load, which used to kill the fresh socket).
-let appReady = false;
+
+const Conn = createConn({
+  isPages: () => onGitHubPages,
+  getBase: () => base,
+  getToken: () => store.get('token'),
+  isHidden: () => document.visibilityState === 'hidden',
+  onStatus: (text, ok) => status(text, ok !== false),
+  onTitle: (text) => setConnTitle(text),
+  onDisconnected: () => { /* UI already updated via onStatus */ },
+  onRejected: () => { boot(); },
+  onNeedBoot: () => { boot(); },
+  onAuth: () => {
+    ungate();
+    Conn.send({ t: 'mode', mode });
+    Conn.send({ t: 'windows' });
+    const fromNotice = window.CursorRemoteApp?.takeOpenWin?.();
+    if (fromNotice) store.set('window', fromNotice);
+    Conn.send({ t: 'attach', id: store.get('window') || '' });
+    sentWidth = 0;
+    applyQuality();
+    Conn.send({ t: 'visible', v: document.visibilityState === 'visible' });
+    Conn.send({ t: 'lang', v: I18N.lang });
+    syncNotify();
+    setTimeout(checkAppUpdate, 3000);
+  },
+  onMessage: (m) => {
+    if (m.t === 'chat') renderChat(m.chat);
+    else if (m.t === 'frame') onFrame(m);
+    else if (m.t === 'panel') { panel = m.rect; layoutStage(); applyQuality(); }
+    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
+    else if (m.t === 'attached') {
+      store.set('window', m.id);
+      currentWindow = m.id;
+      $('titleText').textContent = winLabel(m.title).name;
+      Conn.send({ t: 'windows' });
+    }
+    else if (m.t === 'menu') showMenu(m.kind, m.items, m.max);
+    else if (m.t === 'params') showParams(m);
+    else if (m.t === 'changes') showChanges(m);
+    else if (m.t === 'file') showFile(m);
+    else if (m.t === 'status') status(m.msg, m.ok);
+  },
+});
 
 // Keep the layout above the on-screen keyboard.
 function fitViewport() {
@@ -323,8 +363,7 @@ function setConnTitle(text) {
 }
 
 function send(obj) {
-  if (ws && ws.readyState === 1 && authed) ws.send(JSON.stringify(obj));
-  else status('未连接', false);
+  if (!Conn.send(obj)) status('未连接', false);
 }
 
 /* ---------- gate: pairing / 2FA / offline ---------- */
@@ -509,7 +548,6 @@ async function verifyTotp(code) {
 }
 
 async function boot() {
-  authed = false;
   clearTimeout(retryTimer);
   // Android browser opened a pairing link: offer to hand it to the installed app instead.
   if (pending && /Android/.test(navigator.userAgent) && !inApp && !pending.stay) {
@@ -552,7 +590,7 @@ async function boot() {
       autoRetry();
       status('断开，重连中…', false);
       gate({ msg: '连不上电脑：请确认手机 VPN 已连、电脑 npm start 仍开着。正在重试…', retry: true });
-      setTimeout(() => { if (!authed && base) connect(); }, 800);
+      setTimeout(() => { if (!Conn.isAuthed && base) Conn.open(); }, 800);
       return;
     }
     autoRetry();
@@ -563,143 +601,26 @@ async function boot() {
     return showUnpaired('这台设备已被移除，请重新配对');
   }
   if (me.needTotp) return showTotp(verifyTotp);
-  connect();
+  Conn.open();
 }
 
 let retryTimer = null;
 function autoRetry() {
   clearTimeout(retryTimer);
   // Gateway/frp: tunnel often recovers in a few seconds — don't sit on a 15s gate.
-  retryTimer = setTimeout(() => { if (!authed) boot(); }, onGitHubPages ? 15000 : 3000);
-}
-
-function reconnectDelay() {
-  if (onGitHubPages) return Math.min(8000, 800 * Math.max(failures, 1));
-  return Math.min(2500, 300 * Math.max(failures, 1));
+  retryTimer = setTimeout(() => { if (!Conn.isAuthed) boot(); }, onGitHubPages ? 15000 : 3000);
 }
 
 /** Back to foreground: reconnect immediately if the socket died while backgrounded. */
 function resumeConnection() {
-  if (!appReady) return;
-  failures = 0;
   clearTimeout(retryTimer);
   clearTimeout(resumeTimer);
-  resumeTimer = setTimeout(() => {
-    if (!base || !store.get('token')) return;
-    if (authed && ws && ws.readyState === 1) {
-      send({ t: 'visible', v: true });
-      status('已连接');
-      return;
-    }
-    // CONNECTING or OPEN-but-authing: leave it alone (double connect was causing [+]/[-] flaps).
-    if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
-    connect();
-  }, 50);
+  resumeTimer = setTimeout(() => Conn.resume(), 50);
 }
 
 function connect() {
   clearTimeout(retryTimer);
-  appReady = true;
-  // Already handshaking / connected — do not tear down (boot + resume used to race and kill the live socket).
-  if (ws && (ws.readyState === 0 || (ws.readyState === 1 && authed))) return;
-  if (ws && ws.readyState === 1 && !authed) return;
-  const prev = ws;
-  ws = null;
-  if (prev) {
-    try {
-      prev.onclose = null;
-      prev.onmessage = null;
-      prev.onerror = null;
-      prev.close();
-    } catch {}
-  }
-  const gen = ++wsGen;
-  const epoch = reconnectEpoch;
-  status('连接中…');
-  setConnTitle('连接中…');
-  $('dot').className = '';
-  const socket = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
-  ws = socket;
-  // frp/VPN 下 WebSocket 可能一直停在 CONNECTING，必须主动超时，否则界面会假死在「连接中…」。
-  const connectTimer = setTimeout(() => {
-    if (gen !== wsGen || authed) return;
-    status('连接超时，重试中…', false);
-    setConnTitle('连接超时');
-    try { socket.close(); } catch {}
-  }, onGitHubPages ? 12000 : 8000);
-  socket.onopen = () => socket.send(JSON.stringify({ t: 'auth', token: store.get('token') }));
-  let rejected = false;
-  socket.onclose = async () => {
-    clearTimeout(connectTimer);
-    if (gen !== wsGen) return;
-    $('dot').className = '';
-    authed = false;
-    // 后台时先别狂重连（会打满 frp）；回前台 resumeConnection 会立刻连。
-    if (document.visibilityState === 'hidden') {
-      status('未连接', false);
-      setConnTitle('未连接');
-      return;
-    }
-    if (!store.get('token')) return;
-    if (rejected) {
-      await sleep(0);
-      if (gen !== wsGen || epoch !== reconnectEpoch) return;
-      return boot();
-    }
-    failures++;
-    status('断开，重连中…', false);
-    setConnTitle('断开，重连中…');
-    await sleep(reconnectDelay());
-    if (gen !== wsGen || epoch !== reconnectEpoch) return;
-    if (document.visibilityState === 'hidden') return;
-    if (failures >= (onGitHubPages ? 3 : 12)) {
-      failures = 0;
-      return onGitHubPages ? boot() : connect();
-    }
-    connect();
-  };
-  socket.onerror = () => {
-    if (gen === wsGen && !authed) status('连接失败，重试中…', false);
-  };
-  socket.onmessage = ev => {
-    if (gen !== wsGen) return;
-    const m = JSON.parse(ev.data);
-    if (m.t === 'auth') {
-      clearTimeout(connectTimer);
-      if (!m.ok) { rejected = true; return; }
-      authed = true; failures = 0;
-      ungate();
-      $('dot').className = 'ok';
-      status('已连接');
-      setConnTitle('已连接');
-      send({ t: 'mode', mode });
-      send({ t: 'windows' });
-      const fromNotice = window.CursorRemoteApp?.takeOpenWin?.();
-      if (fromNotice) store.set('window', fromNotice);
-      send({ t: 'attach', id: store.get('window') || '' });
-      sentWidth = 0;
-      applyQuality();
-      send({ t: 'visible', v: document.visibilityState === 'visible' });
-      send({ t: 'lang', v: I18N.lang });
-      syncNotify();
-      setTimeout(checkAppUpdate, 3000);
-    }
-    else if (m.t === 'chat') renderChat(m.chat);
-    else if (m.t === 'frame') onFrame(m);
-    else if (m.t === 'panel') { panel = m.rect; layoutStage(); applyQuality(); }
-    else if (m.t === 'windows') { windows = m.list; currentWindow = m.current; if (sheetKind === 'windows') showWindows(); }
-    else if (m.t === 'attached') {
-      store.set('window', m.id);
-      currentWindow = m.id;
-      $('titleText').textContent = winLabel(m.title).name;
-      send({ t: 'windows' });
-    }
-    else if (m.t === 'menu') showMenu(m.kind, m.items, m.max);
-    else if (m.t === 'params') showParams(m);
-    else if (m.t === 'changes') showChanges(m);
-    else if (m.t === 'file') showFile(m);
-    else if (m.t === 'status') status(m.msg, m.ok);
-  };
+  Conn.open();
 }
 
 /* ---------- bottom sheet ---------- */
@@ -749,10 +670,9 @@ function showWindows() {
 }
 $('title').onclick = () => {
   // Not connected: tapping the stuck「连接中…」title forces a reconnect.
-  if (!(authed && ws && ws.readyState === 1)) {
+  if (!Conn.isAuthed) {
     if (!base || !store.get('token')) return boot();
-    failures = 0;
-    return connect();
+    return Conn.forceOpen();
   }
   send({ t: 'windows' });
   showWindows();
@@ -943,25 +863,17 @@ async function disableNotify() {
 function openWin(id) {
   if (!id) return;
   store.set('window', id);
-  if (authed) send({ t: 'attach', id });
+  if (Conn.isAuthed) send({ t: 'attach', id });
 }
 window.openWin = openWin;
 navigator.serviceWorker?.addEventListener('message', e => openWin(e.data?.openWin));
 document.addEventListener('visibilitychange', () => {
-  if (!appReady) return;
-  if (document.visibilityState === 'hidden') {
-    reconnectEpoch++; // cancel pending reconnect sleeps only
-    if (authed) send({ t: 'visible', v: false });
-  } else {
-    resumeConnection();
-  }
+  if (!Conn.bootStarted) return;
+  if (document.visibilityState === 'hidden') Conn.pause();
+  else resumeConnection();
 });
 // Android App onResume/onPause（需新 APK）
-window.cursorRemotePause = () => {
-  if (!appReady) return;
-  reconnectEpoch++;
-  if (authed) send({ t: 'visible', v: false });
-};
+window.cursorRemotePause = () => Conn.pause();
 window.cursorRemoteResume = () => resumeConnection();
 
 function showInstallHelp() {
@@ -1015,7 +927,7 @@ $('sheet').addEventListener('click', async e => {
     if (apkUpdate()) { closeSheet(); installAppUpdate(); }
     else { await checkAppUpdate(true); if (apkUpdate()) showMainMenu(); }
   }
-  else if (act === 'reconnect') { closeSheet(); ws?.close(); }
+  else if (act === 'reconnect') { closeSheet(); Conn.forceOpen(); }
   else if (act === 'donate') showDonate();
   else if (act === 'lang') openSheet('lang', '<h3>语言 / Language</h3>'
     + `<button class="opt ${I18N.lang === 'zh' ? 'cur' : ''}" data-act="setLang" data-v="zh"><span class="lbl">中文</span></button>`
@@ -1036,7 +948,7 @@ $('sheet').addEventListener('click', async e => {
     if (!await ask('取消本机配对？之后要在电脑上重新运行 npm run pair 才能再用。', '取消配对')) return;
     await post('/api/logout').catch(() => {});
     store.set('token', null); store.set('key', null);
-    authed = false; ws?.close();
+    Conn.reset();
   }
 });
 
@@ -1049,7 +961,7 @@ function setMode(m) {
   $('chatView').classList.toggle('active', m === 'chat');
   $('screenView').classList.toggle('active', m === 'screen');
   $('chatTools').hidden = m !== 'chat';
-  if (authed) send({ t: 'mode', mode: m });
+  if (Conn.isAuthed) send({ t: 'mode', mode: m });
   if (m === 'screen') { layoutStage(); applyQuality(); }
 }
 $('tabChat').onclick = () => setMode('chat');
@@ -1327,9 +1239,8 @@ function layoutStage() {
   screen.style.top = -ry * scale + 'px';
 }
 
-let sentWidth = 0;
 function applyQuality() {
-  if (mode !== 'screen' || !authed) return;
+  if (mode !== 'screen' || !Conn.isAuthed) return;
   const [, , rw] = cropRect();
   const px = Math.min(2560, Math.round(view.clientWidth * zoom * devicePixelRatio * frame.w / rw));
   if (Math.abs(px - sentWidth) < 40) return;

@@ -14,6 +14,9 @@ auth.token = "向管理员要-与集群 frps 相同"
 transport.heartbeatInterval = 10
 transport.heartbeatTimeout = 30
 
+# 不要手动再开一份 frpc：npm start 会独占本配置（清孤儿、掉线自拉）。
+# 双开会抢同一个 remotePort，网关表现为整站 502。
+
 [[proxies]]
 name = "cursor-remote-你的代号"
 type = "tcp"
