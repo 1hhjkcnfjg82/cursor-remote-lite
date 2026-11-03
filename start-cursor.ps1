@@ -13,10 +13,37 @@ function Test-Cdp {
 }
 
 function Find-Cursor {
+  if ($env:CURSOR_EXE -and (Test-Path $env:CURSOR_EXE)) { return $env:CURSOR_EXE }
+  $cfgPath = Join-Path $DataDir 'config.json'
+  if (Test-Path $cfgPath) {
+    try {
+      $cfg = Get-Content -Raw -Path $cfgPath | ConvertFrom-Json
+      if ($cfg.cursorExe -and (Test-Path $cfg.cursorExe)) { return $cfg.cursorExe }
+    } catch {}
+  }
   $running = Get-Process -Name Cursor -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1
   if ($running) { return $running.Path }
   foreach ($p in @("$env:LOCALAPPDATA\Programs\cursor\Cursor.exe", "$env:ProgramFiles\Cursor\Cursor.exe")) {
     if (Test-Path $p) { return $p }
+  }
+  # Custom installs often only appear via Start Menu shortcuts.
+  $shell = $null
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($root in @(
+      "$env:APPDATA\Microsoft\Windows\Start Menu\Programs",
+      "$env:ProgramData\Microsoft\Windows\Start Menu\Programs"
+    )) {
+      if (-not (Test-Path $root)) { continue }
+      $lnk = Get-ChildItem -Path $root -Recurse -Filter 'Cursor.lnk' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+      if ($lnk) {
+        $target = $shell.CreateShortcut($lnk.FullName).TargetPath
+        if ($target -and (Test-Path $target)) { return $target }
+      }
+    }
+  } catch {} finally {
+    if ($shell) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
   }
   $null
 }
