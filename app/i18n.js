@@ -5,7 +5,9 @@ const I18N = (() => {
   const lang = saved === 'zh' || saved === 'en' ? saved : /^zh\b/i.test(navigator.language || '') ? 'zh' : 'en';
 
   const EN = {
-    '连接中…': 'Connecting…', '对话': 'Chat', '画面': 'Screen', '↑ 加载更早的消息': '↑ Load earlier messages',
+    '连接中…': 'Connecting…', '连接超时': 'Timed out', '连接超时，重试中…': 'Timed out, retrying…',
+    '连接失败，重试中…': 'Connection failed, retrying…',
+    '对话': 'Chat', '画面': 'Screen', '↑ 加载更早的消息': '↑ Load earlier messages',
     '没找到聊天面板。': 'No chat panel found.', '请在 Cursor 里打开 Agent 对话，或切到「画面」查看。': 'Open an Agent chat in Cursor, or switch to "Screen".',
     '↓ 最新': '↓ Latest', '聊天面板': 'Chat panel', '整个窗口': 'Whole window', '点击': 'Tap', '滚动': 'Scroll', '刷新': 'Refresh',
     '回车': 'Enter', '⌘回车': '⌘Enter', '打开聊天': 'Open chat', '右键': 'Right-click', '历史': 'History', '＋ 新建': '+ New',
@@ -28,6 +30,8 @@ const I18N = (() => {
     '在浏览器里继续': 'Continue in browser', '正在查找电脑…': 'Looking for the computer…', '读取失败，请检查手机网络（需要能打开 github.io）': 'Could not load. Check your phone\'s network (github.io must be reachable).',
     '还没有找到电脑地址。': 'The computer\'s address isn\'t published yet.', '请在电脑上运行 npm run public 并保持窗口开着，约 1 分钟后点重试。': 'Run npm run public on the computer and keep that window open, then tap Retry in about a minute.',
     '电脑不在线：可能关机、睡眠，或服务刚重启（新地址约 1 分钟后生效）。会自动重试…': 'Computer offline: it may be off, asleep, or the service just restarted (a new address takes about a minute). Retrying automatically…',
+    '连不上电脑：请确认手机 VPN 已连、电脑 npm start 仍开着。正在重试…': 'Cannot reach the computer. Check phone VPN and that npm start is still running. Retrying…',
+    '连不上电脑：请确认手机 VPN 已连、电脑 npm start 仍开着。会自动重试…': 'Cannot reach the computer. Check phone VPN and that npm start is still running. Retrying automatically…',
     '这台设备已被移除，请重新配对': 'This device was removed. Please pair again.',
     '切换 Cursor 窗口': 'Switch Cursor window', '没有找到窗口': 'No windows found', '本地': 'Local',
     '「Agents」是 Cursor 专门跑 Agent 的窗口；其他是普通编辑器窗口（IDE 模式），SSH 远程窗口也在这里。': '"Agents" is Cursor\'s dedicated Agent window; the others are regular editor windows (IDE mode), including SSH remotes.',

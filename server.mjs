@@ -28,9 +28,19 @@ const CONFIG = loadConfig();
 const PUBLISH_REPO = process.argv.find(a => a.startsWith('--publish='))?.slice('--publish='.length) || process.env.CR_PUBLISH_REPO || CONFIG.publishRepo || '';
 const APP_ORIGIN = PUBLISH_REPO ? `https://${PUBLISH_REPO.split('/')[0].toLowerCase()}.github.io` : '';
 const ALLOWED_ORIGINS = new Set([APP_ORIGIN, ...(process.env.CR_ALLOWED_ORIGINS || '').split(',')].filter(Boolean));
+const GW_MODE = resolveGwMode();
 
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; }
+}
+
+/** Gateway backend: auto (LAN then frp) | lan | frp. CLI --gw= overrides config.gwMode. */
+function resolveGwMode() {
+  const fromArg = process.argv.find((a) => a.startsWith('--gw='))?.slice('--gw='.length);
+  const raw = String(fromArg || process.env.CR_GW_MODE || CONFIG.gwMode || 'auto').trim().toLowerCase();
+  if (raw === 'frp' || raw === 'lan' || raw === 'auto') return raw;
+  console.log(`!! 未知 gwMode=${raw}，使用 auto（可选：auto / lan / frp）`);
+  return 'auto';
 }
 
 // A device is usable once paired and, when 2FA asks for it, re-verified.
@@ -1192,8 +1202,19 @@ function serveApp(res, name) {
   const file = path.join(APP_DIR, path.basename(name));
   const type = MIME[path.extname(file)];
   if (!type || !fs.existsSync(file)) return false;
-  res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': type });
-  fs.createReadStream(file).pipe(res);
+  // Prefer Content-Length over chunked encoding: frp TCP proxies (and some VPNs) have
+  // been observed to stall on chunked responses while small fixed-length bodies work.
+  const body = fs.readFileSync(file);
+  const base = path.basename(name);
+  // Android WebView aggressively caches the shell; never cache HTML/JS or phones stick on old reconnect bugs.
+  const noCache = base === 'index.html' || base.endsWith('.js') || base === 'sw.js';
+  res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    'content-type': type,
+    'content-length': body.length,
+    ...(noCache ? { 'cache-control': 'no-store, no-cache, must-revalidate', pragma: 'no-cache' } : {}),
+  });
+  res.end(body);
   return true;
 }
 
@@ -1307,7 +1328,12 @@ server.on('upgrade', (req, socket, head) => {
 // The token arrives as the first message rather than in the URL, so it never shows up in proxy logs.
 wss.on('connection', (ws, req) => {
   let session = null;
-  const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
+  const ip = clientIp(req);
+  console.log(`[?] ws ${ip}（等待认证）`);
+  const authTimer = setTimeout(() => {
+    console.log(`[!] ws ${ip} 认证超时`);
+    ws.close(4001, 'auth timeout');
+  }, 5000);
   let queue = Promise.resolve();
   ws.on('message', raw => {
     let msg;
@@ -1316,6 +1342,7 @@ wss.on('connection', (ws, req) => {
       clearTimeout(authTimer);
       const device = msg.t === 'auth' ? findDevice(msg.token) : null;
       if (!device || needsTotp(device)) {
+        console.log(`[!] ws ${ip} 认证失败${device ? '（需要 2FA）' : '（无此设备/token 无效，需重新配对）'}`);
         ws.send(JSON.stringify({ t: 'auth', ok: false, needTotp: Boolean(device) }));
         return ws.close(4001, 'unauthorized');
       }
@@ -1323,7 +1350,7 @@ wss.on('connection', (ws, req) => {
       session = new Session(ws, device.id);
       addViewer(session);
       ws.send(JSON.stringify({ t: 'auth', ok: true }));
-      console.log(`[+] client ${clientIp(req)}`);
+      console.log(`[+] client ${ip}「${device.name}」`);
       return;
     }
     // Frame acks bypass the queue so a slow command never stalls the stream.
@@ -1568,6 +1595,49 @@ function ensureFrpc() {
   return true;
 }
 
+async function tryRegisterLan(endpoint, origin, token, user, tried) {
+  const ips = listRegisterIps(CONFIG.gwRegisterIp);
+  for (const ip of ips) {
+    const host = `${ip}:${PORT}`;
+    tried.push(host);
+    try {
+      await postRegister(endpoint, token, user, host);
+      if (!origin || await gatewayCanReach(origin, user)) {
+        console.log(`已向网关登记 ${user} → ${host}`);
+        return true;
+      }
+      console.log(`!! 网关登记了 ${host}，但网关连不上本机，试下一个 IP…`);
+    } catch (e) {
+      console.log(`!! 网关登记 ${host} 失败：${e.message}`);
+    }
+  }
+  return false;
+}
+
+async function tryRegisterFrp(endpoint, origin, token, user, tried) {
+  // Home / VPN-client isolation: PC dials out via frpc; gateway talks to in-cluster frps.
+  // No gatewayCanReach here: home PC→gateway→frp→itself hairpins and often times out;
+  // phone traffic is a different path. lan/auto still probe LAN candidates.
+  const frpHost = frpRegisterHost();
+  if (!frpHost) {
+    console.log('!! gwMode=frp 但未配置 gwFrpRemotePort / gwFrpHost');
+    return false;
+  }
+  const already = frpcChild && !frpcChild.killed;
+  if (!ensureFrpc()) return false;
+  // Only wait for first frpc startup; re-register cycles should not stall 2.5s each time.
+  if (!already) await new Promise((r) => setTimeout(r, 2500));
+  tried.push(frpHost);
+  try {
+    await postRegister(endpoint, token, user, frpHost);
+    console.log(`已向网关登记 ${user} → ${frpHost}（frp 回连，跳过本机回环探测）`);
+    return true;
+  } catch (e) {
+    console.log(`!! frp 登记失败：${e.message}`);
+  }
+  return false;
+}
+
 async function registerWithGateway() {
   const endpoint = gwRegisterEndpoint();
   const origin = gwOrigin();
@@ -1577,44 +1647,22 @@ async function registerWithGateway() {
   }
   const token = CONFIG.gwRegisterToken || process.env.CR_GW_REGISTER_TOKEN;
   if (!endpoint || !user || !token) return;
-  const ips = listRegisterIps(CONFIG.gwRegisterIp);
   const tried = [];
-  for (const ip of ips) {
-    const host = `${ip}:${PORT}`;
-    tried.push(host);
-    try {
-      await postRegister(endpoint, token, user, host);
-      if (!origin || await gatewayCanReach(origin, user)) {
-        console.log(`已向网关登记 ${user} → ${host}`);
-        return;
-      }
-      console.log(`!! 网关登记了 ${host}，但网关连不上本机，试下一个 IP…`);
-    } catch (e) {
-      console.log(`!! 网关登记 ${host} 失败：${e.message}`);
-    }
+  let ok = false;
+  if (GW_MODE === 'frp') {
+    ok = await tryRegisterFrp(endpoint, origin, token, user, tried);
+  } else if (GW_MODE === 'lan') {
+    ok = await tryRegisterLan(endpoint, origin, token, user, tried);
+  } else {
+    ok = await tryRegisterLan(endpoint, origin, token, user, tried);
+    if (!ok) ok = await tryRegisterFrp(endpoint, origin, token, user, tried);
   }
-
-  // Home / VPN-client isolation: PC dials out via frpc; gateway talks to in-cluster frps.
-  const frpHost = frpRegisterHost();
-  if (frpHost) {
-    ensureFrpc();
-    await new Promise((r) => setTimeout(r, 2500));
-    tried.push(frpHost);
-    try {
-      await postRegister(endpoint, token, user, frpHost);
-      if (!origin || await gatewayCanReach(origin, user)) {
-        console.log(`已向网关登记 ${user} → ${frpHost}（frp 回连）`);
-        return;
-      }
-      console.log(`!! 已登记 frp 后端 ${frpHost}，但网关仍连不上（检查 VPN、frps、frpc.toml remotePort）`);
-    } catch (e) {
-      console.log(`!! frp 登记失败：${e.message}`);
-    }
-  }
+  if (ok) return;
 
   console.log(
-    `!! 网关登记失败：试过 ${tried.join(', ') || '(无候选)'}。` +
-      `在家请保证公司 VPN 已连，并配置 gwFrpRemotePort + bridge/frpc.toml；公司 Wi-Fi 下一般不用 frp。`
+    `!! 网关登记失败（gwMode=${GW_MODE}）：试过 ${tried.join(', ') || '(无候选)'}。` +
+      `在家请保证公司 VPN 已连，并配置 gwFrpRemotePort + bridge/frpc.toml；公司 Wi-Fi 下一般不用 frp。` +
+      `可用 npm start -- --gw=frp|lan|auto 指定方式。`
   );
 }
 
@@ -1629,6 +1677,7 @@ function startGatewayRegistration() {
   process.on('exit', stopFrpc);
   process.on('SIGINT', stopFrpc);
   process.on('SIGTERM', stopFrpc);
+  console.log(`网关登记模式 gwMode=${GW_MODE}（可用 --gw=frp|lan|auto 或 config.gwMode）`);
   const run = () => { registerWithGateway().catch(() => {}); };
   run();
   setInterval(run, 2 * 60 * 1000).unref?.();

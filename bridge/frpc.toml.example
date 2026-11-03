@@ -4,6 +4,16 @@ serverPort = 30700
 auth.method = "token"
 auth.token = "向管理员要-与集群 frps 相同"
 
+# 若 Cisco AnyConnect 等 VPN 下手机「能连上又马上断」、或超过约 1KB 的页面加载失败：
+# 多半是 VPN 网卡 MTU 偏大（常见 1390）导致 frp 隧道大包丢失。管理员权限下把 VPN 网卡 MTU 降到 1200，例如：
+#   netsh interface ipv4 show subinterfaces
+#   netsh interface ipv4 set subinterface "以太网 5" mtu=1200 store=persistent
+# （名称以 show 里 AnyConnect 那一块为准。）
+
+# 手机断开后重连要等很久：缩短心跳，让半开连接更快被清掉。
+transport.heartbeatInterval = 10
+transport.heartbeatTimeout = 30
+
 [[proxies]]
 name = "cursor-remote-你的代号"
 type = "tcp"

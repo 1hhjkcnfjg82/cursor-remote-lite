@@ -290,11 +290,16 @@ const store = {
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-let base = null, info = null, ws = null, authed = false, failures = 0;
+let base = null, info = null, ws = null, authed = false, failures = 0, wsGen = 0;
 let mode = store.get('mode') || 'chat';
 let crop = store.get('crop') !== 'full';
 let frame = { w: 1000, h: 800 }, panel = null, zoom = 1, tapMode = 'tap', rightNext = false;
 let windows = [], currentWindow = null;
+// Gateway / LAN serve the app from the relay itself; only GitHub Pages needs url.json discovery.
+const onGitHubPages = /\.github\.io$/i.test(location.hostname);
+// Only used to cancel in-flight reconnect sleeps when leaving/returning to the app.
+let reconnectEpoch = 0;
+let resumeTimer = null;
 
 // Keep the layout above the on-screen keyboard.
 function fitViewport() {
@@ -307,6 +312,11 @@ fitViewport();
 function status(text, ok = true) {
   $('msg').textContent = text;
   $('msg').className = ok ? '' : 'err';
+}
+
+function setConnTitle(text) {
+  // Top-left title defaults to「连接中…」in HTML; keep it in sync so a hung WS doesn't look frozen forever.
+  if (!currentWindow) $('titleText').textContent = text;
 }
 
 function send(obj) {
@@ -506,14 +516,20 @@ async function boot() {
     return;
   }
   gate({ msg: '正在查找电脑…' });
-  let res;
-  try {
-    res = await fetch('url.json?t=' + Date.now(), { cache: 'no-store' });
-  } catch {
-    return gate({ msg: '读取失败，请检查手机网络（需要能打开 github.io）', err: true, retry: true });
+  if (!onGitHubPages) {
+    // Served by relay/gateway (company intranet): address is this origin; skip GitHub Pages url.json.
+    info = { self: true };
+  } else {
+    let res;
+    try {
+      res = await fetch('url.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(12000) });
+    } catch {
+      autoRetry();
+      return gate({ msg: '读取失败，请检查手机网络（需要能打开 github.io）', err: true, retry: true });
+    }
+    info = res.ok ? await res.json().catch(() => null) : null;
+    if (!info) return gate({ msg: '还没有找到电脑地址。\n请在电脑上运行 npm run public 并保持窗口开着，约 1 分钟后点重试。', err: true, retry: true });
   }
-  info = res.ok ? await res.json().catch(() => null) : null;
-  if (!info) return gate({ msg: '还没有找到电脑地址。\n请在电脑上运行 npm run public 并保持窗口开着，约 1 分钟后点重试。', err: true, retry: true });
   if (pending) store.set('key', pending.key);
   try {
     base = await resolveBase();
@@ -528,6 +544,14 @@ async function boot() {
   try {
     me = await api('/api/me').then(r => r.json());
   } catch {
+    // Gateway/frp: show status but keep hammering WS shortly — tunnel often recovers in 2–5s.
+    if (!onGitHubPages && store.get('token')) {
+      autoRetry();
+      status('断开，重连中…', false);
+      gate({ msg: '连不上电脑：请确认手机 VPN 已连、电脑 npm start 仍开着。正在重试…', retry: true });
+      setTimeout(() => { if (!authed && base) connect(); }, 800);
+      return;
+    }
     autoRetry();
     return gate({ msg: '电脑不在线：可能关机、睡眠，或服务刚重启（新地址约 1 分钟后生效）。会自动重试…', retry: true });
   }
@@ -542,37 +566,103 @@ async function boot() {
 let retryTimer = null;
 function autoRetry() {
   clearTimeout(retryTimer);
-  retryTimer = setTimeout(() => { if (!authed) boot(); }, 15000);
+  // Gateway/frp: tunnel often recovers in a few seconds — don't sit on a 15s gate.
+  retryTimer = setTimeout(() => { if (!authed) boot(); }, onGitHubPages ? 15000 : 3000);
+}
+
+function reconnectDelay() {
+  if (onGitHubPages) return Math.min(8000, 800 * Math.max(failures, 1));
+  return Math.min(2500, 300 * Math.max(failures, 1));
+}
+
+/** Back to foreground: reconnect immediately if the socket died while backgrounded. */
+function resumeConnection() {
+  failures = 0;
+  clearTimeout(retryTimer);
+  clearTimeout(resumeTimer);
+  resumeTimer = setTimeout(() => {
+    if (!base || !store.get('token')) return;
+    if (authed && ws && ws.readyState === 1) {
+      send({ t: 'visible', v: true });
+      status('已连接');
+      return;
+    }
+    connect();
+  }, 50);
 }
 
 function connect() {
   clearTimeout(retryTimer);
-  ws = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'auth', token: store.get('token') }));
+  // Never refuse to connect because of a sticky "hidden" flag — that broke first connect on Android WebView.
+  const prev = ws;
+  ws = null;
+  if (prev) {
+    try {
+      prev.onclose = null;
+      prev.onmessage = null;
+      prev.onerror = null;
+      prev.close();
+    } catch {}
+  }
+  const gen = ++wsGen;
+  const epoch = reconnectEpoch;
+  status('连接中…');
+  setConnTitle('连接中…');
+  $('dot').className = '';
+  const socket = new WebSocket(base.replace(/^http/, 'ws') + '/ws');
+  ws = socket;
+  // frp/VPN 下 WebSocket 可能一直停在 CONNECTING，必须主动超时，否则界面会假死在「连接中…」。
+  const connectTimer = setTimeout(() => {
+    if (gen !== wsGen || authed) return;
+    status('连接超时，重试中…', false);
+    setConnTitle('连接超时');
+    try { socket.close(); } catch {}
+  }, onGitHubPages ? 12000 : 8000);
+  socket.onopen = () => socket.send(JSON.stringify({ t: 'auth', token: store.get('token') }));
   let rejected = false;
-  ws.onclose = async () => {
+  socket.onclose = async () => {
+    clearTimeout(connectTimer);
+    if (gen !== wsGen) return;
     $('dot').className = '';
-    if (!authed) {
-      // boot() asks /api/me whether the device was removed or needs 2FA again.
-      await sleep(rejected ? 0 : 2000);
+    authed = false;
+    // 后台时先别狂重连（会打满 frp）；回前台 resumeConnection 会立刻连。
+    if (document.visibilityState === 'hidden') {
+      status('未连接', false);
+      setConnTitle('未连接');
+      return;
+    }
+    if (!store.get('token')) return;
+    if (rejected) {
+      await sleep(0);
+      if (gen !== wsGen || epoch !== reconnectEpoch) return;
       return boot();
     }
-    authed = false;
     failures++;
     status('断开，重连中…', false);
-    await sleep(Math.min(8000, 800 * failures));
-    // After repeated failures the relay may have restarted on a new address; rediscover it.
-    if (failures >= 3) { failures = 0; return boot(); }
+    setConnTitle('断开，重连中…');
+    await sleep(reconnectDelay());
+    if (gen !== wsGen || epoch !== reconnectEpoch) return;
+    if (document.visibilityState === 'hidden') return;
+    if (failures >= (onGitHubPages ? 3 : 12)) {
+      failures = 0;
+      return onGitHubPages ? boot() : connect();
+    }
     connect();
   };
-  ws.onmessage = ev => {
+  socket.onerror = () => {
+    if (gen === wsGen && !authed) status('连接失败，重试中…', false);
+  };
+  socket.onmessage = ev => {
+    if (gen !== wsGen) return;
     const m = JSON.parse(ev.data);
     if (m.t === 'auth') {
+      clearTimeout(connectTimer);
       if (!m.ok) { rejected = true; return; }
       authed = true; failures = 0;
       ungate();
       $('dot').className = 'ok';
       status('已连接');
+      setConnTitle('已连接');
       send({ t: 'mode', mode });
       send({ t: 'windows' });
       const fromNotice = window.CursorRemoteApp?.takeOpenWin?.();
@@ -648,7 +738,16 @@ function showWindows() {
     <span class="tag">${KIND_TAG[w.kind] || ''}</span><span class="lbl">${esc(winLabel(w.title || w.id).name)}${winLabel(w.title || '').file ? `<span class="sub">${esc(winLabel(w.title).file)}</span>` : ''}</span></button>`).join('');
   openSheet('windows', `<h3>切换 Cursor 窗口</h3>${rows || '<div class="hint">没有找到窗口</div>'}`);
 }
-$('title').onclick = () => { send({ t: 'windows' }); showWindows(); };
+$('title').onclick = () => {
+  // Not connected: tapping the stuck「连接中…」title forces a reconnect.
+  if (!(authed && ws && ws.readyState === 1)) {
+    if (!base || !store.get('token')) return boot();
+    failures = 0;
+    return connect();
+  }
+  send({ t: 'windows' });
+  showWindows();
+};
 
 const MENU_TITLE = { mode: '选择模式', model: '选择模型', history: '历史对话' };
 function showMenu(kind, items, max) {
@@ -840,8 +939,19 @@ function openWin(id) {
 window.openWin = openWin;
 navigator.serviceWorker?.addEventListener('message', e => openWin(e.data?.openWin));
 document.addEventListener('visibilitychange', () => {
-  if (authed) send({ t: 'visible', v: document.visibilityState === 'visible' });
+  if (document.visibilityState === 'hidden') {
+    reconnectEpoch++; // cancel pending reconnect sleeps only
+    if (authed) send({ t: 'visible', v: false });
+  } else {
+    resumeConnection();
+  }
 });
+// Android App onResume/onPause（需新 APK；不要在 pause 里阻止 connect）
+window.cursorRemotePause = () => {
+  reconnectEpoch++;
+  if (authed) send({ t: 'visible', v: false });
+};
+window.cursorRemoteResume = () => resumeConnection();
 
 function showInstallHelp() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);

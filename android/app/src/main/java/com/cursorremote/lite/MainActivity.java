@@ -107,9 +107,12 @@ public class MainActivity extends Activity {
         NotifyService.start(this);
     }
 
-    // WebView's onPause/onResume flip document.visibilityState, which tells the relay whether to notify.
+    // Tell the page before WebView pauses so it stops frp reconnect storms; on resume reconnect immediately.
     @Override
     protected void onPause() {
+        web.evaluateJavascript(
+                "(function(){try{window.cursorRemotePause&&window.cursorRemotePause()}catch(e){}})()",
+                null);
         super.onPause();
         web.onPause();
     }
@@ -118,6 +121,9 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         web.onResume();
+        web.evaluateJavascript(
+                "(function(){try{window.cursorRemoteResume&&window.cursorRemoteResume()}catch(e){}})()",
+                null);
     }
 
     @Override

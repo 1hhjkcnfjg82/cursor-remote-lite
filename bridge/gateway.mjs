@@ -62,6 +62,19 @@ function proxyHeaders(req) {
   return headers;
 }
 
+function pipePair(a, b) {
+  a.pipe(b);
+  b.pipe(a);
+  const close = () => {
+    try { a.destroy(); } catch {}
+    try { b.destroy(); } catch {}
+  };
+  a.on('error', close);
+  b.on('error', close);
+  a.on('close', close);
+  b.on('close', close);
+}
+
 function proxy(req, res, targetBase, user) {
   const incoming = new URL(req.url, 'http://x');
   const target = new URL(incoming.pathname + incoming.search, targetBase);
@@ -86,11 +99,26 @@ function proxy(req, res, targetBase, user) {
         : setCookie;
       res.writeHead(pRes.statusCode || 502, outHeaders);
       pRes.pipe(res);
+      res.on('close', () => {
+        try { pRes.destroy(); } catch {}
+        try { pReq.destroy(); } catch {}
+      });
     }
   );
+  // Half-open frp backends after phone drops can hang forever without this.
+  pReq.setTimeout(20000, () => {
+    try { pReq.destroy(new Error('backend timeout')); } catch {}
+  });
   pReq.on('error', (err) => {
+    if (res.headersSent) {
+      try { res.destroy(); } catch {}
+      return;
+    }
     res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
     res.end(`连不上电脑（${user}）：${err.message}\n请确认对方已 npm start，且集群能访问其 IP。`);
+  });
+  req.on('aborted', () => {
+    try { pReq.destroy(); } catch {}
   });
   req.pipe(pReq);
 }
@@ -236,6 +264,12 @@ server.on('upgrade', (req, socket, head) => {
     method: 'GET',
     headers,
   });
+  const fail = () => {
+    try { pReq.destroy(); } catch {}
+    try { socket.destroy(); } catch {}
+  };
+  socket.on('error', fail);
+  pReq.setTimeout(20000, fail);
   pReq.on('upgrade', (pRes, pSocket, pHead) => {
     const lines = [`HTTP/1.1 101 Switching Protocols`];
     for (const [k, v] of Object.entries(pRes.headers)) {
@@ -245,12 +279,12 @@ server.on('upgrade', (req, socket, head) => {
     lines.push('', '');
     socket.write(lines.join('\r\n'));
     if (pHead?.length) socket.write(pHead);
-    pSocket.pipe(socket);
-    socket.pipe(pSocket);
+    pipePair(socket, pSocket);
   });
-  pReq.on('error', () => socket.destroy());
-  pReq.end();
+  pReq.on('error', fail);
+  // head must be written before end; empty head is fine for typical WS upgrades.
   if (head?.length) pReq.write(head);
+  pReq.end();
 });
 
 server.listen(PORT, '0.0.0.0', () => {
