@@ -50,14 +50,18 @@ npm install
 ```
 
 - `gwRegisterToken` 问管理员要一串令牌，粘贴替换 `"向管理员要"`。  
-- **在家也要用时**（推荐写上）：`gwFrpRemotePort` / `gwFrpHost` 向管理员要（每人一个端口，不要重复）。并把 `bridge/frpc.toml.example` 复制为 `bridge/frpc.toml`，填上 token 和同一个 `remotePort`。  
-  `npm start` 在直连失败时会自动拉起 `frpc` 回连公司，手机入口不变。
+- **在家也要用时**（推荐写上）：`gwFrpRemotePort` / `gwFrpHost` 向管理员要（每人一个端口，不要重复）。然后：
+  1. 把 `bridge/frpc.toml.example` 复制为 `bridge/frpc.toml`，填上 token 和同一个 `remotePort`；
+  2. 把 `frpc.exe` 放到 `bridge/`（仓库不带这个文件；向管理员要，或从 [frp Releases](https://github.com/fatedier/frp/releases) 下载 Windows amd64 包解压出 `frpc.exe`）。  
+  `npm start` 在直连失败时会自动拉起 `frpc` 回连公司，手机入口不变。不要再单独跑 `bridge/start-bridge.bat`（会和 `npm start` 抢端口）。
 
 电脑电源建议：接通电源后，睡眠选 **从不**。
 
 ---
 
 ## 4. 每次要用时：电脑开两步
+
+内网请用下面两步；**不要**双击 `start-windows.bat`（那是外网 Cloudflare 隧道）。
 
 系统 PowerShell，进入项目目录后：
 
@@ -107,8 +111,8 @@ node server.mjs --gw=frp
 或在家走回连时：
 
 ```text
-已启动 frpc 回连（remotePort=18001），在家也可走网关
-已向网关登记 小明 → cursor-remote-frps:18001（frp 回连）
+已启动 frpc 回连（pid=12345），在家也可走网关
+已向网关登记 小明 → cursor-remote-frps:18001（frp 回连，跳过本机回环探测）
 ```
 
 ---
@@ -145,7 +149,7 @@ http://192.168.120.110:30939/?u=小明
 - **代号无效 / 连不上**：先看电脑 `npm start` 有没有「已向网关登记」；手机 VPN 是否已连。  
 - **未连接到 Cursor**：再跑一次 `start-cursor.ps1`。  
 - **换网络 / 重拨 VPN 后连不上**：重新执行一次 `npm start` 即可，不用改配置。  
-- **一直登记失败（尤其在家）**：确认公司 VPN 已连；配置了 `gwFrpRemotePort`；存在 `bridge/frpc.exe` 与 `bridge/frpc.toml`。公司 Wi‑Fi 下一般不用 frp。在家可 `npm start -- --gw=frp`。  
+- **一直登记失败（尤其在家）**：确认公司 VPN 已连；配置了 `gwFrpRemotePort`；存在 `bridge/frpc.exe` 与 `bridge/frpc.toml`。公司 Wi‑Fi 下一般不用 frp。在家可 `npm start -- --gw=frp`。公司 Wi‑Fi 若登记了但网关连不上本机，可在 `config.json` 加 `"gwRegisterIp": "你的10.x地址"`。  
 - **手机断开重连很慢（在家）**：多半是 `auto` 先扫局域网超时。改用 `npm start -- --gw=frp`。  
 - **手机断开后重连失败 / 刚连上又断（在家 + AnyConnect）**：本机经网关探测时，超过约 1KB 的响应会超时，而认证等小包正常——典型是 **VPN 网卡 MTU 过大**（AnyConnect 常见 1390），frp 隧道大包在路上被丢。用**管理员** PowerShell：
   ```powershell

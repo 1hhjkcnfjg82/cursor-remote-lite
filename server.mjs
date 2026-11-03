@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
+import { TextDecoder } from 'node:util';
 import { createInterface } from 'node:readline';
 import { WebSocketServer } from 'ws';
 import qrcode from 'qrcode-terminal';
@@ -1715,19 +1716,31 @@ function startGatewayRegistration() {
   console.log('停止：本窗口 Ctrl+C，或另开终端执行 npm run stop');
   if (process.platform === 'win32' && (GW_MODE === 'frp' || GW_MODE === 'auto')) {
     try {
-      const raw = execFileSync(
+      // Chinese Windows PowerShell pipes GBK by default; Node utf8 decode turns 以太网 into U+FFFD.
+      const buf = execFileSync(
         'powershell.exe',
         ['-NoProfile', '-Command',
-          "Get-NetIPInterface -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -match '以太网|AnyConnect|Cisco' } | ForEach-Object { $_.InterfaceAlias + '=' + $_.NlMtu }",
+          "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+          "Get-NetIPInterface -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -match '以太网|AnyConnect|Cisco' } | " +
+          "ForEach-Object { $_.InterfaceAlias + '|' + $_.InterfaceIndex + '=' + $_.NlMtu }",
         ],
-        { encoding: 'utf8', windowsHide: true, timeout: 8000 },
+        { encoding: 'buffer', windowsHide: true, timeout: 8000 },
       );
+      let raw = buf.toString('utf8');
+      if (/\uFFFD/.test(raw)) {
+        try { raw = new TextDecoder('gbk').decode(buf); } catch {}
+      }
       for (const line of raw.split(/\r?\n/)) {
-        const m = /^(.+)=(\d+)\s*$/.exec(line.trim());
+        const m = /^(.+)\|(\d+)=(\d+)\s*$/.exec(line.trim());
         if (!m) continue;
-        const mtu = Number(m[2]);
+        const alias = m[1];
+        const idx = m[2];
+        const mtu = Number(m[3]);
         if (mtu > 1200) {
-          console.log(`!! VPN 网卡「${m[1]}」MTU=${mtu}，大于 1200 时 frp 大包易丢（页面/连接会假死）。建议：netsh interface ipv4 set subinterface "${m[1]}" mtu=1200 store=persistent`);
+          console.log(
+            `!! VPN 网卡「${alias}」MTU=${mtu}，大于 1200 时 frp 大包易丢（页面/连接会假死）。` +
+            `建议（管理员）：netsh interface ipv4 set subinterface ${idx} mtu=1200 store=persistent`,
+          );
         }
       }
     } catch {}
