@@ -1,0 +1,13 @@
+serverAddr = "192.168.120.110"
+serverPort = 30700
+
+auth.method = "token"
+auth.token = "向管理员要-与集群 frps 相同"
+
+[[proxies]]
+name = "cursor-remote-你的代号"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 3939
+# 每人一个，不要和其他人重复（18001–18030）
+remotePort = 18001

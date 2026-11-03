@@ -1457,9 +1457,9 @@ function startTunnel() {
 }
 
 function listRegisterIps(prefer) {
-  if (prefer && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(prefer)) return [prefer];
   const ifaces = Object.entries(os.networkInterfaces());
   const scored = [];
+  const present = new Set();
   for (const [name, addrs] of ifaces) {
     for (const i of addrs || []) {
       if (!i || (i.family !== 'IPv4' && i.family !== 4) || i.internal) continue;
@@ -1472,13 +1472,22 @@ function listRegisterIps(prefer) {
         if (b >= 16 && b <= 31) score = 2;
       } else if (ip.startsWith('192.168.')) score = 1;
       if (!score) continue;
-      // Prefer Wi-Fi / WLAN over wired when scores tie — company gateway often
-      // reaches the Wi-Fi/VPN address but not a second NIC on another 10.x segment.
-      if (/wlan|wi-?fi|wireless|vpn|tap|tun/i.test(name)) score += 0.5;
+      present.add(ip);
+      // Prefer Wi-Fi / VPN adapters; company Wi-Fi (10.9.x) is usually reachable from the gateway.
+      if (/wlan|wi-?fi|wireless/i.test(name)) score += 0.5;
+      if (/vpn|anyconnect|tap|tun|ppp/i.test(name)) score += 0.3;
       scored.push({ ip, score, name });
     }
   }
-  return scored.sort((a, b) => b.score - a.score).map(x => x.ip);
+  const ordered = scored.sort((a, b) => b.score - a.score).map(x => x.ip);
+  // Pin only if that IP is currently on a NIC; still try the others afterward.
+  if (prefer && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(prefer) && present.has(prefer)) {
+    return [prefer, ...ordered.filter(ip => ip !== prefer)];
+  }
+  if (prefer && present.size) {
+    console.log(`!! config.gwRegisterIp=${prefer} 当前网卡上没有这个地址，改为自动探测`);
+  }
+  return ordered;
 }
 
 function gwOrigin() {
@@ -1522,6 +1531,43 @@ async function gatewayCanReach(origin, user) {
   }
 }
 
+let frpcChild = null;
+
+function frpRegisterHost() {
+  if (CONFIG.gwFrpHost) return String(CONFIG.gwFrpHost).trim();
+  const port = Number(CONFIG.gwFrpRemotePort || 0);
+  if (port) return `cursor-remote-frps:${port}`;
+  return null;
+}
+
+function ensureFrpc() {
+  const remotePort = Number(CONFIG.gwFrpRemotePort || 0);
+  if (!remotePort) return false;
+  if (frpcChild && !frpcChild.killed) return true;
+  const exe = path.join(__dirname, 'bridge');
+  const exe = path.join(dir, process.platform === 'win32' ? 'frpc.exe' : 'frpc');
+  const conf = path.join(dir, 'frpc.toml');
+  if (!fs.existsSync(exe) || !fs.existsSync(conf)) {
+    console.log('!! 本机直连失败，需要 frp 回连：缺少 bridge/frpc 或 frpc.toml');
+    return false;
+  }
+  frpcChild = spawn(exe, ['-c', conf], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+  frpcChild.stdout.on('data', (b) => {
+    const s = String(b);
+    if (/start proxy success|login to server success/i.test(s)) console.log('[frpc]', s.trim());
+  });
+  frpcChild.stderr.on('data', (b) => {
+    const s = String(b).trim();
+    if (s) console.log('[frpc]', s);
+  });
+  frpcChild.on('exit', (code) => {
+    console.log(`!! frpc 已退出 (code ${code})`);
+    frpcChild = null;
+  });
+  console.log(`已启动 frpc 回连（remotePort=${remotePort}），在家也可走网关`);
+  return true;
+}
+
 async function registerWithGateway() {
   const endpoint = gwRegisterEndpoint();
   const origin = gwOrigin();
@@ -1532,10 +1578,6 @@ async function registerWithGateway() {
   const token = CONFIG.gwRegisterToken || process.env.CR_GW_REGISTER_TOKEN;
   if (!endpoint || !user || !token) return;
   const ips = listRegisterIps(CONFIG.gwRegisterIp);
-  if (!ips.length) {
-    console.log('!! 网关登记跳过：没有可用的内网/VPN IP');
-    return;
-  }
   const tried = [];
   for (const ip of ips) {
     const host = `${ip}:${PORT}`;
@@ -1551,11 +1593,42 @@ async function registerWithGateway() {
       console.log(`!! 网关登记 ${host} 失败：${e.message}`);
     }
   }
-  console.log(`!! 网关登记失败：试过 ${tried.join(', ')}，集群都连不上。可在 config.json 设 gwRegisterIp，或检查防火墙是否放行 ${PORT}`);
+
+  // Home / VPN-client isolation: PC dials out via frpc; gateway talks to in-cluster frps.
+  const frpHost = frpRegisterHost();
+  if (frpHost) {
+    ensureFrpc();
+    await new Promise((r) => setTimeout(r, 2500));
+    tried.push(frpHost);
+    try {
+      await postRegister(endpoint, token, user, frpHost);
+      if (!origin || await gatewayCanReach(origin, user)) {
+        console.log(`已向网关登记 ${user} → ${frpHost}（frp 回连）`);
+        return;
+      }
+      console.log(`!! 已登记 frp 后端 ${frpHost}，但网关仍连不上（检查 VPN、frps、frpc.toml remotePort）`);
+    } catch (e) {
+      console.log(`!! frp 登记失败：${e.message}`);
+    }
+  }
+
+  console.log(
+    `!! 网关登记失败：试过 ${tried.join(', ') || '(无候选)'}。` +
+      `在家请保证公司 VPN 已连，并配置 gwFrpRemotePort + bridge/frpc.toml；公司 Wi-Fi 下一般不用 frp。`
+  );
 }
 
 function startGatewayRegistration() {
   if (TUNNEL) return;
+  const stopFrpc = () => {
+    if (frpcChild && !frpcChild.killed) {
+      try { frpcChild.kill(); } catch {}
+      frpcChild = null;
+    }
+  };
+  process.on('exit', stopFrpc);
+  process.on('SIGINT', stopFrpc);
+  process.on('SIGTERM', stopFrpc);
   const run = () => { registerWithGateway().catch(() => {}); };
   run();
   setInterval(run, 2 * 60 * 1000).unref?.();

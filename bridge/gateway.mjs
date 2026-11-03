@@ -118,18 +118,25 @@ function validUser(u) {
 }
 
 function validHost(host) {
-  if (typeof host !== 'string' || host.length > 80) return false;
-  const m = /^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/.exec(host.trim());
+  if (typeof host !== 'string' || host.length > 120) return false;
+  const m = /^(.+):(\d{1,5})$/.exec(host.trim());
   if (!m) return false;
   const port = Number(m[2]);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-  const parts = m[1].split('.').map(Number);
-  if (parts.some((x) => x < 0 || x > 255)) return false;
-  const [a, b] = parts;
-  // Only private / VPN-ish ranges — blocks SSRF to public internet.
-  if (a === 10) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
+  const h = m[1];
+  // Private IP (LAN / VPN) — blocks SSRF to public internet.
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(h)) {
+    const parts = h.split('.').map(Number);
+    if (parts.some((x) => x < 0 || x > 255)) return false;
+    const [a, b] = parts;
+    if (a === 10) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    return false;
+  }
+  // In-cluster Service name (home frp backend), e.g. cursor-remote-frps:18001
+  if (/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(h)) return true;
+  if (/^[a-z0-9.-]+\.svc(\.cluster\.local)?$/i.test(h)) return true;
   return false;
 }
 

@@ -43,11 +43,15 @@ npm install
 {
   "publicUrl": "http://192.168.120.110:30939/?u=小明",
   "gwUser": "小明",
-  "gwRegisterToken": "向管理员要"
+  "gwRegisterToken": "向管理员要",
+  "gwFrpRemotePort": 18001,
+  "gwFrpHost": "cursor-remote-frps:18001"
 }
 ```
 
-`gwRegisterToken` 问管理员要一串令牌，粘贴替换 `"向管理员要"`。
+- `gwRegisterToken` 问管理员要一串令牌，粘贴替换 `"向管理员要"`。  
+- **在家也要用时**（推荐写上）：`gwFrpRemotePort` / `gwFrpHost` 向管理员要（每人一个端口，不要重复）。并把 `bridge/frpc.toml.example` 复制为 `bridge/frpc.toml`，填上 token 和同一个 `remotePort`。  
+  `npm start` 在直连失败时会自动拉起 `frpc` 回连公司，手机入口不变。
 
 电脑电源建议：接通电源后，睡眠选 **从不**。
 
@@ -72,10 +76,17 @@ $env:Path = "C:\Program Files\nodejs;" + $env:Path
 npm start
 ```
 
-看到类似这行就对了：
+看到下面任一类似输出就对了：
 
 ```text
 已向网关登记 小明 → 10.x.x.x:3939
+```
+
+或在家走回连时：
+
+```text
+已启动 frpc 回连（remotePort=18001），在家也可走网关
+已向网关登记 小明 → cursor-remote-frps:18001（frp 回连）
 ```
 
 ---
@@ -112,4 +123,5 @@ http://192.168.120.110:30939/?u=小明
 - **代号无效 / 连不上**：先看电脑 `npm start` 有没有「已向网关登记」；手机 VPN 是否已连。  
 - **未连接到 Cursor**：再跑一次 `start-cursor.ps1`。  
 - **换网络 / 重拨 VPN 后连不上**：重新执行一次 `npm start` 即可，不用改配置。  
-- **一直登记失败**：把报错发给管理员；可能需要在配置里加 `"gwRegisterIp": "你的10.x地址"`。
+- **一直登记失败（尤其在家）**：确认公司 VPN 已连；配置了 `gwFrpRemotePort`；存在 `bridge/frpc.exe` 与 `bridge/frpc.toml`。公司 Wi‑Fi 下一般不用 frp。  
+- **端口冲突 / frpc 报错**：`remotePort` 是否和别人重复，问管理员换一个（18001–18030）。
