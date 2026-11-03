@@ -166,17 +166,24 @@ export const saveState = state => writeJson('state.json', { ...readJson('state.j
 export const readState = () => readJson('state.json', {});
 export const readConfig = () => readJson('config.json', {});
 
+// Ensure pathname ends with / without corrupting ?query (e.g. gateway ?u=name).
+function normalizeAppBase(url) {
+  const u = new URL(url);
+  if (!u.pathname.endsWith('/')) u.pathname += '/';
+  return u.href;
+}
+
 // Where the phone app lives: optional publicUrl (e.g. KubeSphere gateway), else GitHub Pages, else the relay itself.
 export function appBase() {
   const cfg = readConfig();
-  if (cfg.publicUrl) return String(cfg.publicUrl).replace(/\/?$/, '/');
+  if (cfg.publicUrl) return normalizeAppBase(cfg.publicUrl);
   const envUrl = process.env.CR_PUBLIC_URL;
-  if (envUrl) return String(envUrl).replace(/\/?$/, '/');
+  if (envUrl) return normalizeAppBase(envUrl);
   const repo = cfg.publishRepo;
   if (repo) {
     const [owner, name] = repo.split('/');
     return `https://${owner.toLowerCase()}.github.io/${name}/`;
   }
   const s = readState();
-  return s.relayUrl ? s.relayUrl.replace(/\/?$/, '/') : null;
+  return s.relayUrl ? normalizeAppBase(s.relayUrl) : null;
 }

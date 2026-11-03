@@ -16,10 +16,15 @@ function parseCookies(header = '') {
   return out;
 }
 
+function normalizeUser(raw) {
+  if (!raw) return null;
+  return String(raw).trim().replace(/\/+$/, '');
+}
+
 function pickUser(req, url) {
-  const q = url.searchParams.get('u') || url.searchParams.get('user');
+  const q = normalizeUser(url.searchParams.get('u') || url.searchParams.get('user'));
   if (q && routes[q]) return q;
-  const c = parseCookies(req.headers.cookie)[COOKIE];
+  const c = normalizeUser(parseCookies(req.headers.cookie)[COOKIE]);
   if (c && routes[c]) return c;
   return null;
 }
@@ -178,7 +183,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const qUser = url.searchParams.get('u') || url.searchParams.get('user');
+  const qUser = normalizeUser(url.searchParams.get('u') || url.searchParams.get('user'));
   if (qUser && !routes[qUser]) {
     res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
     res.end(unknownUserPage(qUser));
