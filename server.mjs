@@ -1544,7 +1544,7 @@ function ensureFrpc() {
   const remotePort = Number(CONFIG.gwFrpRemotePort || 0);
   if (!remotePort) return false;
   if (frpcChild && !frpcChild.killed) return true;
-  const exe = path.join(__dirname, 'bridge');
+  const dir = path.join(__dirname, 'bridge');
   const exe = path.join(dir, process.platform === 'win32' ? 'frpc.exe' : 'frpc');
   const conf = path.join(dir, 'frpc.toml');
   if (!fs.existsSync(exe) || !fs.existsSync(conf)) {
