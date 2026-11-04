@@ -31,11 +31,24 @@ copy bridge\me.json.example bridge\me.json
 # 窗口 A：带调试端口启动 Cursor（会重启 Cursor）
 cd d:\company\phoneCursor\cursor-remote-lite
 powershell -ExecutionPolicy Bypass -File .\start-cursor.ps1
-
-# 窗口 B：中继（一直别关）——会按 me.json 自动写配置并下载 frpc
-cd d:\company\phoneCursor\cursor-remote-lite
-npm start
 ```
+
+**窗口 B：中继（一直别关）**——会按 `me.json` 自动写配置，缺 `frpc.exe` 时自动下载。三种启动方式选一种：
+
+```powershell
+cd d:\company\phoneCursor\cursor-remote-lite
+
+# 默认 auto：先试公司局域网登记，失败再走 frp 回连（一般公司 Wi‑Fi 用这个即可）
+npm start
+
+# 公司：只登记本机局域网 IP，不启动 frpc
+npm start -- --gw=lan
+
+# 在家 / 只开了 VPN、局域网扫不到本机时：只走 frp 回连（推荐在家用这个）
+npm start -- --gw=frp
+```
+
+也可在 `%USERPROFILE%\.cursor-remote-lite\config.json` 里写 `"gwMode": "frp"`（或 `lan` / `auto`），效果与命令行相同；命令行优先。
 
 看到 `已向网关登记 …` 后，再开一个窗口配对手机：
 
@@ -55,7 +68,7 @@ npm run pair
 
 ## 日常
 
-1. 电脑 VPN → 再跑窗口 A、B（`npm start` 别关）  
+1. 电脑 VPN → 再跑窗口 A、B（中继窗口别关；在家用 `npm start -- --gw=frp`）  
 2. 手机 VPN → 打开 `http://192.168.120.110:30939/?u=你的代号`（或已配对的 App）
 
 ---
@@ -64,8 +77,8 @@ npm run pair
 
 - 公司令牌在仓库 `bridge/intranet.defaults.json`，一般不用改。  
 - `frpc.exe` 缺失时会自动下载到 `bridge/`。  
-- 首次 `npm start` 若新建了代号，有空把 `bridge/accounts.json` 提交推送，避免同事撞端口。  
-- 在家连不上：`npm start -- --gw=frp`。停止：`npm run stop`。
+- 首次若新建了代号，有空把 `bridge/accounts.json` 提交推送，避免同事撞端口。  
+- 停止中继：`npm run stop`（不要只关黑窗口）。
 
 | 问题 | 处理 |
 |------|------|
