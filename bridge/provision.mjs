@@ -1,4 +1,5 @@
-// Admin CLI: allocate gwUser + frp port, write bridge/accounts.json, emit config for colleagues.
+// Self-service intranet onboarding: claim a gwUser + frp port, update bridge/accounts.json,
+// write your own config.json + frpc.toml.
 //   npm run provision -- <user>
 //   npm run provision -- --list
 //   npm run provision -- --revoke <user>
@@ -11,7 +12,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
 const ACCOUNTS_FILE = path.join(__dirname, 'accounts.json');
 const OUT_DIR = path.join(__dirname, 'out');
-const ADMIN_FILE = path.join(os.homedir(), '.cursor-remote-lite', 'admin.json');
+const INTRANET_FILE = path.join(os.homedir(), '.cursor-remote-lite', 'intranet.json');
+// Prefer new name; still accept leftover admin.json from earlier drafts.
+const LEGACY_ADMIN_FILE = path.join(os.homedir(), '.cursor-remote-lite', 'admin.json');
 
 const USER_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 const DEFAULT_PORT_MIN = 18001;
@@ -21,12 +24,13 @@ const DEFAULT_FRP_PORT = 30700;
 
 function usage(exit = 1) {
   console.log(`用法：
-  npm run provision -- <user>           开户（拼音/工号，如 xiaoming）
-  npm run provision -- --list           列出已开户
+  npm run provision -- <user>           给自己开户（拼音/工号，如 xiaoming）
+  npm run provision -- --list           查看台账里已占用的代号/端口
   npm run provision -- --revoke <user>  从台账释放代号与端口
 
-开户前请 git pull，并配置 %USERPROFILE%\\.cursor-remote-lite\\admin.json
-（publicUrlBase、gwRegisterToken、frpToken；可选 frpServerAddr / frpServerPort）。`);
+开户前请 git pull，并配置 %USERPROFILE%\\.cursor-remote-lite\\intranet.json
+（公司共用的 publicUrlBase、gwRegisterToken、frpToken；可选 frpServerAddr / frpServerPort）。
+开完后请把 bridge/accounts.json 提交并推送，避免同事撞号。`);
   process.exit(exit);
 }
 
@@ -66,23 +70,26 @@ function saveLedger(ledger) {
   });
 }
 
-function loadAdmin() {
-  const file = fs.existsSync(ADMIN_FILE) ? readJson(ADMIN_FILE, {}) : {};
+function loadIntranet() {
+  const pathUsed = fs.existsSync(INTRANET_FILE) ? INTRANET_FILE
+    : fs.existsSync(LEGACY_ADMIN_FILE) ? LEGACY_ADMIN_FILE
+    : null;
+  const file = pathUsed ? readJson(pathUsed, {}) : {};
   const env = process.env;
-  const admin = {
-    publicUrlBase: env.CR_ADMIN_PUBLIC_URL_BASE || file.publicUrlBase || '',
-    gwRegisterToken: env.CR_ADMIN_GW_REGISTER_TOKEN || file.gwRegisterToken || '',
-    frpToken: env.CR_ADMIN_FRP_TOKEN || file.frpToken || '',
-    frpServerAddr: env.CR_ADMIN_FRP_SERVER_ADDR || file.frpServerAddr || DEFAULT_FRP_ADDR,
-    frpServerPort: Number(env.CR_ADMIN_FRP_SERVER_PORT || file.frpServerPort || DEFAULT_FRP_PORT),
+  const cfg = {
+    publicUrlBase: env.CR_INTRANET_PUBLIC_URL_BASE || env.CR_ADMIN_PUBLIC_URL_BASE || file.publicUrlBase || '',
+    gwRegisterToken: env.CR_INTRANET_GW_REGISTER_TOKEN || env.CR_ADMIN_GW_REGISTER_TOKEN || file.gwRegisterToken || '',
+    frpToken: env.CR_INTRANET_FRP_TOKEN || env.CR_ADMIN_FRP_TOKEN || file.frpToken || '',
+    frpServerAddr: env.CR_INTRANET_FRP_SERVER_ADDR || env.CR_ADMIN_FRP_SERVER_ADDR || file.frpServerAddr || DEFAULT_FRP_ADDR,
+    frpServerPort: Number(env.CR_INTRANET_FRP_SERVER_PORT || env.CR_ADMIN_FRP_SERVER_PORT || file.frpServerPort || DEFAULT_FRP_PORT),
   };
   const missing = [];
-  if (!admin.publicUrlBase) missing.push('publicUrlBase');
-  if (!admin.gwRegisterToken) missing.push('gwRegisterToken');
-  if (!admin.frpToken) missing.push('frpToken');
+  if (!cfg.publicUrlBase) missing.push('publicUrlBase');
+  if (!cfg.gwRegisterToken) missing.push('gwRegisterToken');
+  if (!cfg.frpToken) missing.push('frpToken');
   if (missing.length) {
-    console.error(`缺少管理员配置：${missing.join(', ')}`);
-    console.error(`请写入 ${ADMIN_FILE}，例如：`);
+    console.error(`缺少内网共用配置：${missing.join(', ')}`);
+    console.error(`请写入 ${INTRANET_FILE}（公司内网密钥，每人自备一份，不要提交 git），例如：`);
     console.error(`{
   "publicUrlBase": "http://192.168.120.110:30939",
   "gwRegisterToken": "与网关 REGISTER_TOKEN 相同",
@@ -90,8 +97,8 @@ function loadAdmin() {
 }`);
     process.exit(1);
   }
-  admin.publicUrlBase = String(admin.publicUrlBase).replace(/\/+$/, '');
-  return admin;
+  cfg.publicUrlBase = String(cfg.publicUrlBase).replace(/\/+$/, '');
+  return cfg;
 }
 
 function allocPort(ledger) {
@@ -102,22 +109,22 @@ function allocPort(ledger) {
   return null;
 }
 
-function buildConfig(user, port, admin) {
+function buildConfig(user, port, cfg) {
   return {
-    publicUrl: `${admin.publicUrlBase}/?u=${user}`,
+    publicUrl: `${cfg.publicUrlBase}/?u=${user}`,
     gwUser: user,
-    gwRegisterToken: admin.gwRegisterToken,
+    gwRegisterToken: cfg.gwRegisterToken,
     gwFrpRemotePort: port,
     gwFrpHost: `cursor-remote-frps:${port}`,
   };
 }
 
-function buildFrpc(user, port, admin) {
-  return `serverAddr = "${admin.frpServerAddr}"
-serverPort = ${admin.frpServerPort}
+function buildFrpc(user, port, cfg) {
+  return `serverAddr = "${cfg.frpServerAddr}"
+serverPort = ${cfg.frpServerPort}
 
 auth.method = "token"
-auth.token = "${admin.frpToken}"
+auth.token = "${cfg.frpToken}"
 
 transport.heartbeatInterval = 10
 transport.heartbeatTimeout = 30
@@ -137,7 +144,7 @@ function provision(user) {
     console.error('请使用拼音或工号，仅允许 a-z A-Z 0-9 . _ -（最长 64），例如 xiaoming、u01234。');
     process.exit(1);
   }
-  const admin = loadAdmin();
+  const cfg = loadIntranet();
   const ledger = loadLedger();
   if (ledger.accounts.some(a => a.user === user)) {
     console.error(`代号已存在：${user}（先 npm run provision -- --list，或 --revoke ${user}）`);
@@ -153,28 +160,34 @@ function provision(user) {
   ledger.accounts.sort((a, b) => a.port - b.port);
   saveLedger(ledger);
 
-  const config = buildConfig(user, port, admin);
-  const frpc = buildFrpc(user, port, admin);
+  const config = buildConfig(user, port, cfg);
+  const frpc = buildFrpc(user, port, cfg);
   const dir = path.join(OUT_DIR, user);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config, null, 2) + '\n');
-  fs.writeFileSync(path.join(dir, 'frpc.toml'), frpc);
+  const configPath = path.join(dir, 'config.json');
+  const frpcPath = path.join(dir, 'frpc.toml');
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  fs.writeFileSync(frpcPath, frpc);
+
+  // Also install into the usual runtime locations for this machine.
+  const homeCfg = path.join(os.homedir(), '.cursor-remote-lite', 'config.json');
+  fs.mkdirSync(path.dirname(homeCfg), { recursive: true });
+  fs.writeFileSync(homeCfg, JSON.stringify(config, null, 2) + '\n');
+  fs.writeFileSync(path.join(__dirname, 'frpc.toml'), frpc);
 
   console.log(`已开户 ${user} → 端口 ${port}`);
   console.log(`台账：${path.relative(ROOT, ACCOUNTS_FILE)}（请 git add / commit / push，避免同事撞号）`);
-  console.log(`已写入：${path.relative(ROOT, dir)}\\config.json 与 frpc.toml\n`);
-  console.log('======== 发给同事：config.json ========');
-  console.log(`保存为 %USERPROFILE%\\.cursor-remote-lite\\config.json\n`);
-  console.log(JSON.stringify(config, null, 2));
-  console.log('\n======== 发给同事：frpc.toml ========');
-  console.log(`保存为 项目目录\\bridge\\frpc.toml（另向管理员要 frpc.exe）\n`);
-  console.log(frpc);
+  console.log(`已写入本机：`);
+  console.log(`  ${homeCfg}`);
+  console.log(`  ${path.join(__dirname, 'frpc.toml')}`);
+  console.log(`副本：${path.relative(ROOT, dir)}\\`);
+  console.log('\n另需自备 bridge\\frpc.exe（见手册）。然后按手册启动 Cursor 调试端口与 npm start，再 npm run pair。');
 }
 
 function listAccounts() {
   const ledger = loadLedger();
   if (!ledger.accounts.length) {
-    console.log('台账为空。开户：npm run provision -- <user>');
+    console.log('台账为空。给自己开户：npm run provision -- <user>');
     return;
   }
   console.log(`端口池 ${ledger.portMin}–${ledger.portMax}，已用 ${ledger.accounts.length} 个：\n`);
@@ -193,7 +206,7 @@ function revoke(user) {
     process.exit(1);
   }
   saveLedger(ledger);
-  console.log(`已从台账移除 ${user}（端口已释放）。若对方仍在跑 frpc，请让其先 npm run stop。`);
+  console.log(`已从台账移除 ${user}（端口已释放）。若本机还在跑 frpc，请先 npm run stop。`);
   console.log('请 git commit / push 更新后的 bridge/accounts.json。');
 }
 

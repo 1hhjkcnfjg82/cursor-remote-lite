@@ -17,50 +17,7 @@
 
 代号只能用**拼音或工号**（`a-z` `A-Z` `0-9` `.` `_` `-`），例如 `xiaoming`、`u01234`。**不要用中文**，网关会拒绝登记。
 
-开户与端口分配请走下面「管理员：一键开户」；不要口头随便占端口。
-
----
-
-## 管理员：一键开户
-
-在**管理员**电脑、本仓库目录操作（开户前先 `git pull`，开完后把 `bridge/accounts.json` 提交并推送，避免撞号）。
-
-**① 一次性：写管理员密钥**（不要提交 git）
-
-`%USERPROFILE%\.cursor-remote-lite\admin.json`：
-
-```json
-{
-  "publicUrlBase": "http://192.168.120.110:30939",
-  "gwRegisterToken": "与网关 REGISTER_TOKEN 相同",
-  "frpToken": "与集群 frps auth.token 相同"
-}
-```
-
-**② 开户**
-
-```powershell
-cd d:\company\phoneCursor\cursor-remote-lite
-$env:Path = "C:\Program Files\nodejs;" + $env:Path
-npm run provision -- xiaoming
-```
-
-会自动占用一个空闲端口（18001–18030），更新 `bridge/accounts.json`，并在 `bridge/out/xiaoming/` 生成 `config.json` 与 `frpc.toml`（该目录已 gitignore，内含令牌，用聊天/U 盘发给同事即可）。
-
-```powershell
-npm run provision -- --list
-npm run provision -- --revoke xiaoming
-```
-
-`--revoke` 只改台账、释放端口；若对方还在跑 `frpc`，先让其 `npm run stop`。
-
-**③ 发给同事**
-
-- `config.json` → 对方保存为 `%USERPROFILE%\.cursor-remote-lite\config.json`  
-- `frpc.toml` → 对方保存为项目里 `bridge/frpc.toml`  
-- 另发 `frpc.exe`（或让对方按手册自行下载）
-
-同事仍需本机执行第 2 步克隆项目、`npm install`，以及第 4–5 步启动与配对。
+没有单独「管理员」角色：每人拿到源码后自己跑开户命令占代号和端口（见第 3 步）。公司共用的网关/frp 令牌放进本机 `intranet.json`（向运维或内部文档要，不要提交 git）。
 
 ---
 
@@ -89,27 +46,57 @@ npm install
 
 ---
 
-## 3. 电脑：写自己的配置（只需一次）
+## 3. 电脑：给自己开户并写配置（只需一次）
 
-**推荐**：向管理员要开户产物（见上文「一键开户」），把收到的文件放到：
+**① 本机写入公司共用内网密钥**（不要提交 git）
 
-- `%USERPROFILE%\.cursor-remote-lite\config.json`  
-- 项目目录 `bridge/frpc.toml`  
-- `frpc.exe` 放到 `bridge/`（仓库不带；或从 [frp Releases](https://github.com/fatedier/frp/releases) 下 Windows amd64 解压）
-
-若需手写，新建 `%USERPROFILE%\.cursor-remote-lite\config.json`（资源管理器地址栏粘贴 `%USERPROFILE%\.cursor-remote-lite`），**代号必须是英文**，例如：
+`%USERPROFILE%\.cursor-remote-lite\intranet.json`：
 
 ```json
 {
-  "publicUrl": "http://192.168.120.110:30939/?u=xiaoming",
-  "gwUser": "xiaoming",
-  "gwRegisterToken": "向管理员要",
-  "gwFrpRemotePort": 18001,
-  "gwFrpHost": "cursor-remote-frps:18001"
+  "publicUrlBase": "http://192.168.120.110:30939",
+  "gwRegisterToken": "与网关 REGISTER_TOKEN 相同",
+  "frpToken": "与集群 frps auth.token 相同"
 }
 ```
 
-手写时端口必须与管理员台账一致，不要自己随便改。`npm start` 在直连失败时会自动拉起 `frpc`；不要再单独跑 `bridge/start-bridge.bat`（会和 `npm start` 抢端口）。
+（令牌向运维/内部文档要；每人自备一份即可。）
+
+**② 开户前先拉最新台账，再用自己的拼音/工号占号**
+
+```powershell
+cd d:\company\phoneCursor\cursor-remote-lite
+git pull
+$env:Path = "C:\Program Files\nodejs;" + $env:Path
+npm run provision -- --list
+npm run provision -- xiaoming
+```
+
+会占用一个空闲端口（18001–18030），更新 `bridge/accounts.json`，并自动写入：
+
+- `%USERPROFILE%\.cursor-remote-lite\config.json`  
+- 项目里 `bridge/frpc.toml`  
+
+**③ 把台账推上去**（很重要，否则同事可能撞号）
+
+```powershell
+git add bridge/accounts.json
+git commit -m "provision: xiaoming"
+git push
+```
+
+**④ 自备 `frpc.exe`**
+
+放到 `bridge/`（仓库不带；从 [frp Releases](https://github.com/fatedier/frp/releases) 下 Windows amd64 解压，或向同事要一份）。
+
+查看 / 释放（一般只释放自己的代号）：
+
+```powershell
+npm run provision -- --list
+npm run provision -- --revoke xiaoming
+```
+
+`npm start` 在直连失败时会自动拉起 `frpc`；不要再单独跑 `bridge/start-bridge.bat`（会和 `npm start` 抢端口）。
 
 电脑电源建议：接通电源后，睡眠选 **从不**。
 
@@ -243,7 +230,7 @@ http://192.168.120.110:30939/?u=xiaoming
   ```
   （把 `以太网 5` 换成上面列表里 Cisco AnyConnect 那一块的名字。）改完后重连 VPN，再 `npm start -- --gw=frp`。手机侧 VPN 若也有 MTU 设置，同样可降到 1200。  
 - **断开后要等一会儿才能再连上**：多半是旧 WebSocket/frp 半开连接还没清掉。确认 `bridge/frpc.toml` 里有 `transport.heartbeatInterval = 10`，然后重启 `npm start -- --gw=frp`；手机强制刷新入口页。仍慢的话把手机 VPN 的 MTU 也降到 1200。  
-- **端口冲突 / frpc 报错**：`remotePort` 是否和别人重复，问管理员换一个（18001–18030）。  
+- **端口冲突 / frpc 报错**：`git pull` 后看 `npm run provision -- --list`；`remotePort` 是否和台账不一致，或是否与别人重复（18001–18030）。  
 - **整站 502 /「连不上电脑」且本机刚 Ctrl+C 过**：多半是旧 `frpc` 没退干净。执行 `npm run stop` 再 `npm start -- --gw=frp`；平时停服务优先用 `npm run stop`，不要只关黑窗口。  
 - **iPhone 微信里打开不正常**：复制链接，到 Safari 中打开；日常用「添加到主屏幕」的图标。  
 - **同事的手机能不能配我的电脑**：可以（同一台电脑 `npm run pair` 多次），但内网多人场景建议一人一机，避免误操作别人的 Cursor。  
