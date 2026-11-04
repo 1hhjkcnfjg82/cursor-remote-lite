@@ -1,5 +1,5 @@
-// Self-service intranet onboarding: claim a gwUser + frp port, update bridge/accounts.json,
-// write your own config.json + frpc.toml.
+// Intranet self-setup from bridge/me.json (just set "user"), or CLI.
+//   npm start                         → reads me.json, writes local config if needed
 //   npm run provision -- <user>
 //   npm run provision -- --list
 //   npm run provision -- --revoke <user>
@@ -12,10 +12,13 @@ import { ensureFrpcBinarySync } from './ensure-frpc.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
 const ACCOUNTS_FILE = path.join(__dirname, 'accounts.json');
+const ME_FILE = path.join(__dirname, 'me.json');
 const OUT_DIR = path.join(__dirname, 'out');
 const DEFAULTS_FILE = path.join(__dirname, 'intranet.defaults.json');
 const INTRANET_FILE = path.join(os.homedir(), '.cursor-remote-lite', 'intranet.json');
 const LEGACY_ADMIN_FILE = path.join(os.homedir(), '.cursor-remote-lite', 'admin.json');
+const HOME_CONFIG = path.join(os.homedir(), '.cursor-remote-lite', 'config.json');
+const FRPC_TOML = path.join(__dirname, 'frpc.toml');
 
 const USER_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 const DEFAULT_PORT_MIN = 18001;
@@ -23,21 +26,25 @@ const DEFAULT_PORT_MAX = 18030;
 const DEFAULT_FRP_ADDR = '192.168.120.110';
 const DEFAULT_FRP_PORT = 30700;
 
+function fail(msg, exitOnError) {
+  if (exitOnError) {
+    console.error(msg);
+    process.exit(1);
+  }
+  throw new Error(msg);
+}
+
 function usage(exit = 1) {
   console.log(`用法：
-  npm run provision -- <user>           给自己开户（拼音/工号，如 xiaoming）
-  npm run provision -- --list           查看台账里已占用的代号/端口
-  npm run provision -- --revoke <user>  从台账释放代号与端口
-
-开户前请 git pull。令牌默认读仓库里的 bridge/intranet.defaults.json
-（也可本机覆盖：%USERPROFILE%\\.cursor-remote-lite\\intranet.json）。
-开完后请把 bridge/accounts.json 提交并推送，避免同事撞号。`);
+  推荐：编辑 bridge/me.json 里的 user，然后 npm start（自动开户）
+  npm run provision -- <user>           手动开户
+  npm run provision -- --list
+  npm run provision -- --revoke <user>`);
   process.exit(exit);
 }
 
 function readJson(file, fallback = null) {
   try {
-    // PowerShell Set-Content -Encoding utf8 writes a BOM; strip it.
     const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
     return JSON.parse(text);
   } catch (e) {
@@ -57,10 +64,11 @@ function loadLedger() {
     portMax: DEFAULT_PORT_MAX,
     accounts: [],
   });
-  const portMin = Number(raw.portMin) || DEFAULT_PORT_MIN;
-  const portMax = Number(raw.portMax) || DEFAULT_PORT_MAX;
-  const accounts = Array.isArray(raw.accounts) ? raw.accounts : [];
-  return { portMin, portMax, accounts };
+  return {
+    portMin: Number(raw.portMin) || DEFAULT_PORT_MIN,
+    portMax: Number(raw.portMax) || DEFAULT_PORT_MAX,
+    accounts: Array.isArray(raw.accounts) ? raw.accounts : [],
+  };
 }
 
 function saveLedger(ledger) {
@@ -96,9 +104,7 @@ function loadIntranet() {
   if (!cfg.gwRegisterToken) missing.push('gwRegisterToken');
   if (!cfg.frpToken) missing.push('frpToken');
   if (missing.length) {
-    console.error(`缺少内网配置：${missing.join(', ')}`);
-    console.error(`请补全仓库内 bridge/intranet.defaults.json，或本机 ${INTRANET_FILE}`);
-    process.exit(1);
+    fail(`缺少内网配置：${missing.join(', ')}（检查 bridge/intranet.defaults.json）`, true);
   }
   cfg.publicUrlBase = String(cfg.publicUrlBase).replace(/\/+$/, '');
   return cfg;
@@ -141,61 +147,82 @@ remotePort = ${port}
 `;
 }
 
-function provision(user) {
+function localReady(user) {
+  const existing = readJson(HOME_CONFIG, null);
+  return existing?.gwUser === user && fs.existsSync(FRPC_TOML);
+}
+
+/** Claim or reuse port, write home config + bridge/frpc.toml, ensure frpc binary. */
+export function provision(user, { exitOnError = true, quietIfReady = false } = {}) {
   if (!USER_RE.test(user)) {
-    console.error(`代号无效：${user}`);
-    console.error('请使用拼音或工号，仅允许 a-z A-Z 0-9 . _ -（最长 64），例如 xiaoming、u01234。');
-    process.exit(1);
+    fail(`代号无效：${user}（请用拼音/工号，如 xiaoming）`, exitOnError);
   }
+  if (quietIfReady && localReady(user)) return { user, skipped: true };
+
   const cfg = loadIntranet();
   const ledger = loadLedger();
-  if (ledger.accounts.some(a => a.user === user)) {
-    console.error(`代号已存在：${user}（先 npm run provision -- --list，或 --revoke ${user}）`);
-    process.exit(1);
+  let row = ledger.accounts.find(a => a.user === user);
+  let port;
+  let isNew = false;
+  if (row) {
+    port = row.port;
+  } else {
+    port = allocPort(ledger);
+    if (port == null) {
+      fail(`端口池已满（${ledger.portMin}–${ledger.portMax}）`, exitOnError);
+    }
+    row = { user, port, createdAt: new Date().toISOString() };
+    ledger.accounts.push(row);
+    ledger.accounts.sort((a, b) => a.port - b.port);
+    saveLedger(ledger);
+    isNew = true;
   }
-  const port = allocPort(ledger);
-  if (port == null) {
-    console.error(`端口池已满（${ledger.portMin}–${ledger.portMax}），请 --revoke 空闲账号或扩大 portMax。`);
-    process.exit(1);
-  }
-
-  ledger.accounts.push({ user, port, createdAt: new Date().toISOString() });
-  ledger.accounts.sort((a, b) => a.port - b.port);
-  saveLedger(ledger);
 
   const config = buildConfig(user, port, cfg);
   const frpc = buildFrpc(user, port, cfg);
   const dir = path.join(OUT_DIR, user);
   fs.mkdirSync(dir, { recursive: true });
-  const configPath = path.join(dir, 'config.json');
-  const frpcPath = path.join(dir, 'frpc.toml');
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
-  fs.writeFileSync(frpcPath, frpc);
-
-  // Also install into the usual runtime locations for this machine.
-  const homeCfg = path.join(os.homedir(), '.cursor-remote-lite', 'config.json');
-  fs.mkdirSync(path.dirname(homeCfg), { recursive: true });
-  fs.writeFileSync(homeCfg, JSON.stringify(config, null, 2) + '\n');
-  fs.writeFileSync(path.join(__dirname, 'frpc.toml'), frpc);
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config, null, 2) + '\n');
+  fs.writeFileSync(path.join(dir, 'frpc.toml'), frpc);
+  fs.mkdirSync(path.dirname(HOME_CONFIG), { recursive: true });
+  fs.writeFileSync(HOME_CONFIG, JSON.stringify(config, null, 2) + '\n');
+  fs.writeFileSync(FRPC_TOML, frpc);
 
   try {
     ensureFrpcBinarySync(__dirname, console.log);
   } catch (e) {
-    console.log(`!! 自动下载 frpc 失败：${e.message || e}（首次 npm start 时还会再试）`);
+    console.log(`!! 自动下载 frpc 失败：${e.message || e}（首次需要 frp 时还会再试）`);
   }
 
-  console.log(`已开户 ${user} → 端口 ${port}`);
-  console.log(`台账：${path.relative(ROOT, ACCOUNTS_FILE)}（请 git add / commit / push，避免同事撞号）`);
-  console.log(`已写入本机：`);
-  console.log(`  ${homeCfg}`);
-  console.log(`  ${path.join(__dirname, 'frpc.toml')}`);
-  console.log('\n接下来：start-cursor.ps1 → npm start → npm run pair（详见 使用步骤-Windows-内网使用.md）');
+  console.log(isNew ? `已开户 ${user} → 端口 ${port}` : `已套用本机配置 ${user} → 端口 ${port}`);
+  if (isNew) {
+    console.log(`有空请提交并推送 ${path.relative(ROOT, ACCOUNTS_FILE)}，方便同事避让端口`);
+  }
+  return { user, port, isNew, skipped: false };
+}
+
+/** Used by server.mjs / npm start: if bridge/me.json exists, ensure local config. */
+export function ensureFromMeFile() {
+  if (!fs.existsSync(ME_FILE)) return false;
+  const me = readJson(ME_FILE, {});
+  const user = String(me.user || me.gwUser || '').trim();
+  if (!user) {
+    console.log('!! bridge/me.json 里请填写 "user"（英文代号）');
+    return false;
+  }
+  const existing = readJson(HOME_CONFIG, null);
+  if (existing?.gwUser && existing.gwUser !== user) {
+    console.log(`!! bridge/me.json 是 ${user}，本机已是 ${existing.gwUser}。改 me.json 或删除 %USERPROFILE%\\.cursor-remote-lite\\config.json 后再开。`);
+    return false;
+  }
+  provision(user, { exitOnError: false, quietIfReady: true });
+  return true;
 }
 
 function listAccounts() {
   const ledger = loadLedger();
   if (!ledger.accounts.length) {
-    console.log('台账为空。给自己开户：npm run provision -- <user>');
+    console.log('台账为空。编辑 bridge/me.json 后 npm start，或 npm run provision -- <user>');
     return;
   }
   console.log(`端口池 ${ledger.portMin}–${ledger.portMax}，已用 ${ledger.accounts.length} 个：\n`);
@@ -209,18 +236,22 @@ function revoke(user) {
   const ledger = loadLedger();
   const before = ledger.accounts.length;
   ledger.accounts = ledger.accounts.filter(a => a.user !== user);
-  if (ledger.accounts.length === before) {
-    console.error(`台账中没有：${user}`);
-    process.exit(1);
-  }
+  if (ledger.accounts.length === before) fail(`台账中没有：${user}`, true);
   saveLedger(ledger);
-  console.log(`已从台账移除 ${user}（端口已释放）。若本机还在跑 frpc，请先 npm run stop。`);
-  console.log('请 git commit / push 更新后的 bridge/accounts.json。');
+  console.log(`已从台账移除 ${user}。请先 npm run stop，再按需推送 accounts.json。`);
 }
 
-const args = process.argv.slice(2);
-if (!args.length) usage();
-if (args[0] === '--list' || args[0] === 'list') listAccounts();
-else if (args[0] === '--revoke' || args[0] === 'revoke') revoke(args[1]);
-else if (args[0].startsWith('-')) usage();
-else provision(args[0]);
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  const args = process.argv.slice(2);
+  if (!args.length) {
+    if (fs.existsSync(ME_FILE)) {
+      ensureFromMeFile();
+    } else {
+      usage();
+    }
+  } else if (args[0] === '--list' || args[0] === 'list') listAccounts();
+  else if (args[0] === '--revoke' || args[0] === 'revoke') revoke(args[1]);
+  else if (args[0].startsWith('-')) usage();
+  else provision(args[0]);
+}

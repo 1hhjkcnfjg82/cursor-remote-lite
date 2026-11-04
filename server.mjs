@@ -16,6 +16,7 @@ import {
 } from './auth.mjs';
 import { pushPublicKey, openEventStream, closeEventStreams, addViewer, removeViewer, deliver, startWatcher } from './notify.mjs';
 import { createFrpcOwner } from './bridge/frpc-owner.mjs';
+import { ensureFromMeFile } from './bridge/provision.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3939);
@@ -26,6 +27,9 @@ const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const APP_DIR = path.join(__dirname, 'app');
 
 fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+
+// Intranet: edit bridge/me.json → npm start writes ~/.cursor-remote-lite/config.json + frpc.toml.
+try { ensureFromMeFile(); } catch (e) { console.log(`!! 按 me.json 开户失败：${e.message || e}`); }
 
 const CONFIG = loadConfig();
 const PUBLISH_REPO = process.argv.find(a => a.startsWith('--publish='))?.slice('--publish='.length) || process.env.CR_PUBLISH_REPO || CONFIG.publishRepo || '';
