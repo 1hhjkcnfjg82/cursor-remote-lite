@@ -1,0 +1,7 @@
+{
+  "publicUrlBase": "http://192.168.120.110:30939",
+  "gwRegisterToken": "52nRHjO2JLp2U-_PWd_XL7pLzVLCLlDe",
+  "frpToken": "10qOADvlh3tkYT59bGMfcuZxIdjV2HRP",
+  "frpServerAddr": "192.168.120.110",
+  "frpServerPort": 30700
+}

@@ -7,13 +7,14 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { ensureFrpcBinarySync } from './ensure-frpc.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
 const ACCOUNTS_FILE = path.join(__dirname, 'accounts.json');
 const OUT_DIR = path.join(__dirname, 'out');
+const DEFAULTS_FILE = path.join(__dirname, 'intranet.defaults.json');
 const INTRANET_FILE = path.join(os.homedir(), '.cursor-remote-lite', 'intranet.json');
-// Prefer new name; still accept leftover admin.json from earlier drafts.
 const LEGACY_ADMIN_FILE = path.join(os.homedir(), '.cursor-remote-lite', 'admin.json');
 
 const USER_RE = /^[a-zA-Z0-9._-]{1,64}$/;
@@ -28,8 +29,8 @@ function usage(exit = 1) {
   npm run provision -- --list           查看台账里已占用的代号/端口
   npm run provision -- --revoke <user>  从台账释放代号与端口
 
-开户前请 git pull，并配置 %USERPROFILE%\\.cursor-remote-lite\\intranet.json
-（公司共用的 publicUrlBase、gwRegisterToken、frpToken；可选 frpServerAddr / frpServerPort）。
+开户前请 git pull。令牌默认读仓库里的 bridge/intranet.defaults.json
+（也可本机覆盖：%USERPROFILE%\\.cursor-remote-lite\\intranet.json）。
 开完后请把 bridge/accounts.json 提交并推送，避免同事撞号。`);
   process.exit(exit);
 }
@@ -71,30 +72,32 @@ function saveLedger(ledger) {
 }
 
 function loadIntranet() {
+  const defaults = readJson(DEFAULTS_FILE, {});
   const pathUsed = fs.existsSync(INTRANET_FILE) ? INTRANET_FILE
     : fs.existsSync(LEGACY_ADMIN_FILE) ? LEGACY_ADMIN_FILE
     : null;
   const file = pathUsed ? readJson(pathUsed, {}) : {};
   const env = process.env;
+  const pick = (envKeys, key) => {
+    for (const k of envKeys) if (env[k]) return env[k];
+    if (file[key] != null && file[key] !== '') return file[key];
+    if (defaults[key] != null && defaults[key] !== '') return defaults[key];
+    return '';
+  };
   const cfg = {
-    publicUrlBase: env.CR_INTRANET_PUBLIC_URL_BASE || env.CR_ADMIN_PUBLIC_URL_BASE || file.publicUrlBase || '',
-    gwRegisterToken: env.CR_INTRANET_GW_REGISTER_TOKEN || env.CR_ADMIN_GW_REGISTER_TOKEN || file.gwRegisterToken || '',
-    frpToken: env.CR_INTRANET_FRP_TOKEN || env.CR_ADMIN_FRP_TOKEN || file.frpToken || '',
-    frpServerAddr: env.CR_INTRANET_FRP_SERVER_ADDR || env.CR_ADMIN_FRP_SERVER_ADDR || file.frpServerAddr || DEFAULT_FRP_ADDR,
-    frpServerPort: Number(env.CR_INTRANET_FRP_SERVER_PORT || env.CR_ADMIN_FRP_SERVER_PORT || file.frpServerPort || DEFAULT_FRP_PORT),
+    publicUrlBase: pick(['CR_INTRANET_PUBLIC_URL_BASE', 'CR_ADMIN_PUBLIC_URL_BASE'], 'publicUrlBase'),
+    gwRegisterToken: pick(['CR_INTRANET_GW_REGISTER_TOKEN', 'CR_ADMIN_GW_REGISTER_TOKEN'], 'gwRegisterToken'),
+    frpToken: pick(['CR_INTRANET_FRP_TOKEN', 'CR_ADMIN_FRP_TOKEN'], 'frpToken'),
+    frpServerAddr: pick(['CR_INTRANET_FRP_SERVER_ADDR', 'CR_ADMIN_FRP_SERVER_ADDR'], 'frpServerAddr') || DEFAULT_FRP_ADDR,
+    frpServerPort: Number(pick(['CR_INTRANET_FRP_SERVER_PORT', 'CR_ADMIN_FRP_SERVER_PORT'], 'frpServerPort') || DEFAULT_FRP_PORT),
   };
   const missing = [];
   if (!cfg.publicUrlBase) missing.push('publicUrlBase');
   if (!cfg.gwRegisterToken) missing.push('gwRegisterToken');
   if (!cfg.frpToken) missing.push('frpToken');
   if (missing.length) {
-    console.error(`缺少内网共用配置：${missing.join(', ')}`);
-    console.error(`请写入 ${INTRANET_FILE}（公司内网密钥，每人自备一份，不要提交 git），例如：`);
-    console.error(`{
-  "publicUrlBase": "http://192.168.120.110:30939",
-  "gwRegisterToken": "与网关 REGISTER_TOKEN 相同",
-  "frpToken": "与集群 frps auth.token 相同"
-}`);
+    console.error(`缺少内网配置：${missing.join(', ')}`);
+    console.error(`请补全仓库内 bridge/intranet.defaults.json，或本机 ${INTRANET_FILE}`);
     process.exit(1);
   }
   cfg.publicUrlBase = String(cfg.publicUrlBase).replace(/\/+$/, '');
@@ -175,13 +178,18 @@ function provision(user) {
   fs.writeFileSync(homeCfg, JSON.stringify(config, null, 2) + '\n');
   fs.writeFileSync(path.join(__dirname, 'frpc.toml'), frpc);
 
+  try {
+    ensureFrpcBinarySync(__dirname, console.log);
+  } catch (e) {
+    console.log(`!! 自动下载 frpc 失败：${e.message || e}（首次 npm start 时还会再试）`);
+  }
+
   console.log(`已开户 ${user} → 端口 ${port}`);
   console.log(`台账：${path.relative(ROOT, ACCOUNTS_FILE)}（请 git add / commit / push，避免同事撞号）`);
   console.log(`已写入本机：`);
   console.log(`  ${homeCfg}`);
   console.log(`  ${path.join(__dirname, 'frpc.toml')}`);
-  console.log(`副本：${path.relative(ROOT, dir)}\\`);
-  console.log('\n另需自备 bridge\\frpc.exe（见手册）。然后按手册启动 Cursor 调试端口与 npm start，再 npm run pair。');
+  console.log('\n接下来：start-cursor.ps1 → npm start → npm run pair（详见 使用步骤-Windows-内网使用.md）');
 }
 
 function listAccounts() {

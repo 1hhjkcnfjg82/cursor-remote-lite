@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
+import { ensureFrpcBinarySync } from './ensure-frpc.mjs';
 
 export function createFrpcOwner({ bridgeDir, log = console.log, onProxyReady = null } = {}) {
   const exe = path.join(bridgeDir, process.platform === 'win32' ? 'frpc.exe' : 'frpc');
@@ -143,8 +144,16 @@ export function createFrpcOwner({ bridgeDir, log = console.log, onProxyReady = n
 
   function start() {
     if (stopping) return false;
+    if (!fs.existsSync(exe)) {
+      try {
+        ensureFrpcBinarySync(bridgeDir, log);
+      } catch (e) {
+        log(`!! 自动下载 frpc 失败：${e.message || e}（也可手动把 frpc 放到 bridge/）`);
+        return false;
+      }
+    }
     if (!confExists()) {
-      log('!! 本机直连失败，需要 frp 回连：缺少 bridge/frpc 或 frpc.toml');
+      log('!! 本机直连失败，需要 frp 回连：缺少 bridge/frpc.toml（先 npm run provision -- <代号>）');
       return false;
     }
     if (child && !child.killed) return true;
