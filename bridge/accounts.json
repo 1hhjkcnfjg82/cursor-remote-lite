@@ -1,5 +1,11 @@
 {
   "portMin": 18001,
   "portMax": 18030,
-  "accounts": []
+  "accounts": [
+    {
+      "user": "lujichuan",
+      "port": 18001,
+      "createdAt": "2026-11-03T00:00:00.000Z"
+    }
+  ]
 }

@@ -4,7 +4,7 @@
 
 目录：`d:\company\phoneCursor\cursor-remote-lite`  
 App：https://1hhjkcnfjg82.github.io/cursor-remote-app/  
-APK：https://github.com/Suchenl/cursor-remote-lite/releases/latest/download/CursorRemote.apk  
+APK：https://github.com/1hhjkcnfjg82/cursor-remote-lite/releases/latest/download/CursorRemote.apk  
 
 命令一律用**系统 PowerShell**（不要用 Cursor 终端）。若 `node` 不对，先执行：
 
