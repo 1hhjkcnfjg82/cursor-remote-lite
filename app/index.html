@@ -276,6 +276,7 @@
   <button id="gateBtn" class="primary"></button>
   <a id="gateApp" class="primary-link" hidden>在 App 中打开</a>
   <button id="gateRetry">重试</button>
+  <button id="gateRepair">重新配对</button>
   <div id="gateInfo"></div>
 </div>
 
@@ -388,12 +389,14 @@ function gate({ msg = '', err = false, input = null, retry = false, appLink = nu
   if (appLink) $('gateApp').href = appLink;
   $('gateRetry').hidden = !retry;
   $('gateRetry').textContent = typeof retry === 'string' ? retry : '重试';
+  $('gateRepair').hidden = !retry;
   $('gateInfo').textContent = info?.updated ? '电脑端地址更新于 ' + new Date(info.updated).toLocaleString() : '';
 }
 const ungate = () => $('gate').classList.remove('open');
 $('gateBtn').onclick = () => gateSubmit?.($('gateInput').value.trim());
 $('gateInput').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
 $('gateRetry').onclick = () => boot();
+$('gateRepair').onclick = () => { unpairLocal(); };
 
 /* ---------- relay discovery & auth ---------- */
 const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
@@ -609,6 +612,25 @@ function autoRetry() {
   clearTimeout(retryTimer);
   // Gateway/frp: tunnel often recovers in a few seconds — don't sit on a 15s gate.
   retryTimer = setTimeout(() => { if (!Conn.isAuthed) boot(); }, onGitHubPages ? 15000 : 3000);
+}
+
+/** Clear local pairing and return to the paste/scan gate. Best-effort server logout in background. */
+function unpairLocal() {
+  clearTimeout(retryTimer);
+  const token = store.get('token');
+  const logoutBase = base;
+  store.set('token', null);
+  store.set('key', null);
+  Conn.reset();
+  showUnpaired();
+  if (logoutBase && token) {
+    fetch(logoutBase + '/api/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: '{}',
+      cache: 'no-store',
+    }).catch(() => {});
+  }
 }
 
 /** Back to foreground: reconnect immediately if the socket died while backgrounded. */
@@ -946,9 +968,7 @@ $('sheet').addEventListener('click', async e => {
   }
   else if (act === 'logout') {
     if (!await ask('取消本机配对？之后要在电脑上重新运行 npm run pair 才能再用。', '取消配对')) return;
-    await post('/api/logout').catch(() => {});
-    store.set('token', null); store.set('key', null);
-    Conn.reset();
+    unpairLocal();
   }
 });
 
